@@ -32,3 +32,5 @@ app/server/Partitions/
 node_modules/
 .codegraph/
 .playwright-cli/
+.worktrees/
+.superpowers/
