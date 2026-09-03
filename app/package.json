@@ -1,0 +1,10 @@
+{
+  "name": "vcat-neo",
+  "version": "1.0.0",
+  "checkUpdate": false,
+  "main": "main.js",
+  "dependencies": {},
+  "devDependencies": {},
+  "build": 1,
+  "env": "local"
+}

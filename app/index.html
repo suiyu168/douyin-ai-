@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>发布助手</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob: https:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; connect-src 'self' https: wss:; frame-src https:; object-src 'none'; base-uri 'self'">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="stylesheet" href="assets/lead-radar.css">
+</head>
+<body data-page="publish">
+<div id="app">
+  <header id="topbar">
+    <div class="brand">
+      <div class="brand-mark">发</div>
+      <div class="brand-text">
+        <div class="brand-name">发布助手</div>
+      </div>
+    </div>
+    <nav id="nav">
+      <button class="nav-item active" data-page="publish">一键发布</button>
+      <button class="nav-item" data-page="batch">批量发布</button>
+      <button class="nav-item" data-page="radar">商机雷达</button>
+      <button class="nav-item" data-page="browser">浏览器</button>
+      <button class="nav-item" data-page="accounts">账号管理</button>
+      <button class="nav-item" data-page="tasks">任务记录</button>
+      <button class="nav-item" data-page="stats">数据统计</button>
+      <button class="nav-item" data-page="settings">设置</button>
+    </nav>
+    <div class="topbar-right">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">未连接</span>
+    </div>
+  </header>
+  <div id="douyinAccountAlert" class="douyin-account-alert hidden" role="alert">
+    <span class="douyin-account-alert-icon">!</span>
+    <div><strong id="douyinAccountAlertTitle">抖音账号需要处理</strong><span id="douyinAccountAlertMessage"></span></div>
+    <button class="btn small" id="douyinAccountAlertAction">去处理</button>
+  </div>
+  <div id="loginHealthAlert" class="login-health-alert hidden" role="alert">
+    <span class="login-health-alert-icon">!</span>
+    <div><strong>检测到抖音账号掉线</strong><span id="loginHealthAlertMessage"></span></div>
+    <button class="btn small" id="loginHealthAlertAction">查看账号</button>
+  </div>
+  <div id="tabbar">
+    <div id="browserTabs" class="browser-tabs"></div>
+  </div>
+  <div id="content">
+    <aside id="accSidebar">
+      <div class="acc-side-head">
+        <button class="btn small" id="btnAddAccountSide">+ 添加账号</button>
+        <input type="text" id="accSearch" class="input" placeholder="昵称 / ID / 备注">
+      </div>
+      <div id="accSideList" class="acc-side-list">
+        <div class="empty">加载中...</div>
+      </div>
+      <div class="acc-side-foot">
+        <button class="btn ghost small" id="btnManageGroupsSide">分组管理</button>
+        <button class="btn ghost small" id="btnCheckLoginSide">检测登录</button>
+      </div>
+    </aside>
+    <main id="main">
+    <div id="page-browser" class="page">
+      <div id="browserView" class="browser-view" style="height:calc(100vh - 130px)">
+        <div class="empty">点击左侧账号，用该账号的登录态打开抖音创作者中心</div>
+      </div>
+    </div>
+    <div id="page-publish" class="page active">
+      <div class="page-head">
+        <h1>发布图文</h1>
+        <p class="page-sub">将本地图片发布到已登录的抖音账号</p>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <span>目标账号</span>
+          <button class="btn ghost small" id="btnReloadAccounts">刷新</button>
+        </div>
+        <div id="accountGrid" class="account-grid">
+          <div class="empty">加载中...</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><span>图片</span></div>
+        <div id="imageZone" class="image-zone">
+          <input type="file" id="fileInput" accept="image/*" multiple hidden>
+          <button class="btn" id="btnPickImages">选择图片</button>
+          <div id="imageList" class="image-list"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><span>内容</span></div>
+        <div class="form">
+          <label class="form-label">标题</label>
+          <input type="text" id="inputTitle" class="input" placeholder="作品标题（可选）" maxlength="40">
+          <label class="form-label">正文</label>
+          <textarea id="inputDesc" class="textarea" rows="4" placeholder="作品描述，支持 #话题，一行一个话题将追加到正文"></textarea>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><span>音乐</span><span class="hint">可选</span></div>
+        <div class="music-bar">
+          <input type="text" id="musicSearch" class="input" placeholder="搜索歌曲名 / 歌手">
+          <button class="btn" id="btnMusicSearch">搜索</button>
+        </div>
+        <div id="musicList" class="music-list"></div>
+        <div id="musicSelected" class="music-selected hidden"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><span>发布设置</span></div>
+        <div class="form-row">
+          <label class="form-label">发布方式</label>
+          <select id="selPublishMode" class="input select">
+            <option value="now">立即发布</option>
+            <option value="timed">定时发布</option>
+          </select>
+          <div id="timedWrap" class="hidden">
+            <input type="datetime-local" id="inputTimed" class="input">
+          </div>
+        </div>
+      </div>
+      <div class="action-bar">
+        <button class="btn primary big" id="btnPublish">发布到所选账号</button>
+        <button class="btn" id="btnSaveDraft">保存草稿</button>
+        <button class="btn" id="btnOpenDrafts">草稿箱</button>
+        <span id="publishMsg" class="msg"></span>
+      </div>
+    </div>
+
+    <div id="page-accounts" class="page">
+      <div class="page-head">
+        <h1>账号管理</h1>
+        <p class="page-sub">管理已登录的抖音账号</p>
+      </div>
+      <div class="action-bar">
+        <button class="btn" id="btnAddAccount">添加账号</button>
+        <button class="btn ghost" id="btnManageGroups">分组管理</button>
+        <select id="accGroupFilter" class="input select">
+          <option value="">全部分组</option>
+        </select>
+        <button class="btn ghost" id="btnCheckLogin">检测登录态</button>
+      </div>
+      <div id="accountHealthSummary" class="account-health-summary"><div><strong>账号健康</strong><span>正在检查...</span></div><small>网络异常会进入待复检，不会直接判定掉线</small></div>
+      <div id="accountsTable" class="table-wrap">
+        <div class="empty">加载中...</div>
+      </div>
+    </div>
+
+    <div id="page-tasks" class="page">
+      <div class="page-head">
+        <h1>任务记录</h1>
+        <p class="page-sub">发布任务的执行状态</p>
+      </div>
+      <div id="taskSummary" class="task-summary-grid"></div>
+      <div class="task-toolbar">
+        <input id="taskKeyword" class="input task-search" placeholder="搜索标题、账号、音乐、批次或错误原因">
+        <select id="taskStatusFilter" class="input select">
+          <option value="">全部状态</option>
+          <option value="0">待发布</option>
+          <option value="1">发布中</option>
+          <option value="2">已发布</option>
+          <option value="3">已暂停</option>
+          <option value="4">失败</option>
+          <option value="6">定时等待</option>
+        </select>
+        <select id="taskAccountFilter" class="input select">
+          <option value="">全部账号</option>
+        </select>
+        <select id="taskBatchFilter" class="input select">
+          <option value="">全部批次</option>
+        </select>
+        <label class="task-check"><input type="checkbox" id="taskProblemOnly"> 只看异常</label>
+        <button class="btn ghost" id="btnRefreshTasks">刷新</button>
+        <span class="stat" id="taskStat"></span>
+      </div>
+      <div class="task-bulkbar">
+        <span id="taskSelectionCount" class="task-selection-count">未选择任务</span>
+        <button class="btn ghost small" id="btnRetryFailed">重试失败</button>
+        <button class="btn ghost small" id="btnBatchPause">批量暂停</button>
+        <button class="btn ghost small" id="btnBatchResume">批量恢复</button>
+        <button class="btn ghost small" id="btnBatchDelete">批量删除</button>
+        <button class="btn ghost small" id="btnClearDone">清理历史</button>
+        <button class="btn ghost small" id="btnClearAll">清空全部</button>
+      </div>
+      <div id="smsVerifyBanner"></div>
+      <div id="tasksTable" class="table-wrap">
+        <div class="empty">加载中...</div>
+      </div>
+    </div>
+
+    <div id="page-radar" class="page">
+      <div class="page-head radar-page-head">
+        <div>
+          <h1>商机雷达</h1>
+          <p class="page-sub">地坪、冷库、膜结构、推拉棚、无尘车间 · 公开商务线索人工审核工作台</p>
+        </div>
+        <div class="radar-head-actions">
+          <input id="radarOcrFile" type="file" accept="image/png,image/jpeg,image/webp,image/bmp,image/tiff" hidden>
+          <button class="btn" id="radarOcrPick">图片 OCR 识别</button>
+          <button class="btn" id="radarCapturePage">采集当前公开页面</button>
+          <button class="btn ghost" id="radarExport">导出完整号码 CSV</button>
+          <button class="btn ghost" id="radarRefresh">刷新</button>
+        </div>
+      </div>
+
+      <div class="radar-notice">
+        <span class="radar-notice-icon">盾</span>
+        <div><strong>只记录主动公开的商务信息</strong><span>公开号码在本机完整显示，磁盘数据库仍加密保存。第三方视频互动只进入逐条审核队列，不做批量关注、评论或私信。</span></div>
+      </div>
+
+      <div class="radar-runtime-strip">
+        <div>
+          <strong id="radarRuntimeState">运行守护正在初始化</strong>
+          <span id="radarRuntimeDetail">数据库首次完整性检查和 D 盘备份将在启动后约 1 分钟执行</span>
+        </div>
+        <div class="radar-runtime-actions">
+          <label class="radar-check"><input type="checkbox" id="radarKeepAwake" checked> 24小时守护</label>
+          <button class="btn ghost small" id="radarBackupNow">立即备份</button>
+        </div>
+      </div>
+
+      <div id="radarStats" class="radar-stats">
+        <div class="radar-stat"><span>全部线索</span><strong>0</strong></div>
+        <div class="radar-stat"><span>待审核</span><strong>0</strong></div>
+        <div class="radar-stat"><span>公开联系方式</span><strong>0</strong></div>
+        <div class="radar-stat"><span>抖音主页联系方式</span><strong>0</strong></div>
+        <div class="radar-stat"><span>已分配/跟进中</span><strong>0</strong></div>
+        <div class="radar-stat"><span>已成交</span><strong>0</strong></div>
+      </div>
+
+      <section class="panel radar-douyin-panel">
+        <div class="panel-head radar-collector-head">
+          <div><span>抖音公开线索采集</span><div class="hint">安全时段 08:30—22:30，夜间自动暂停；单窗口串行巡检，每个搜索词每轮最多10个视频，其中约一半名额复查历史监控池。高意向评论进入逐条审核队列</div></div>
+          <div class="radar-head-actions">
+            <button class="btn ghost small" id="radarDouyinRefresh">刷新状态</button>
+            <button class="btn primary small" id="radarDouyinRun">开始采集</button>
+          </div>
+        </div>
+        <div class="radar-collector-body radar-douyin-body">
+          <div class="radar-collector-status">
+            <span id="radarDouyinState" class="radar-collector-badge">等待运行</span>
+            <strong id="radarDouyinMessage">将复用当前抖音登录态</strong>
+            <div class="radar-progress"><i id="radarDouyinProgress"></i></div>
+            <div id="radarDouyinLastRun" class="hint">暂无本次启动后的运行记录</div>
+          </div>
+          <div id="radarDouyinMetrics" class="radar-collector-metrics">
+            <span>本轮搜索词 <strong>0</strong></span><span>本轮打开主页 <strong>0</strong></span><span>累计核验主页 <strong>0</strong></span><span>主页公开电话 <strong>0</strong></span><span>需求评论 <strong>0</strong></span><span>互动待审核 <strong>0</strong></span><span>新增 <strong>0</strong></span><span>重复 <strong>0</strong></span><span>异常 <strong>0</strong></span>
+          </div>
+        </div>
+        <div class="radar-douyin-safety">互动策略：只保留最近30天的高意向评论，7天内优先；可逐条复制建议回复并打开原视频，发送前仍由你在抖音页面确认，不自动批量操作。号码在界面完整显示，磁盘数据库仍加密保存。</div>
+        <div class="radar-engagement-head"><strong>高意向互动候选</strong><span id="radarEngagementSummary" class="hint">正在读取候选...</span></div>
+        <div id="radarEngagementCandidates" class="radar-engagement-list"><div class="empty">暂无待审核互动</div></div>
+      </section>
+
+      <section class="panel radar-collector-panel">
+        <div class="panel-head radar-collector-head">
+          <div><span>全网公开工程信息采集</span><div class="hint" id="radarCollectorScope">正在统计公开入口；覆盖政府采购、公共资源交易、央国企/建设单位采购、招标前投资推介，并支持合规的通用网页搜索。工程信息无电话也保留，正文有公开联系方式则一并提取</div></div>
+          <div class="radar-head-actions">
+            <button class="btn ghost small" id="radarCollectorRefresh">刷新状态</button>
+            <button class="btn primary small" id="radarCollectorRun">立即采集</button>
+          </div>
+        </div>
+        <div class="radar-collector-body">
+          <div class="radar-collector-status">
+            <span id="radarCollectorState" class="radar-collector-badge">等待启动</span>
+            <strong id="radarCollectorMessage">正在读取采集器状态...</strong>
+            <div class="radar-progress"><i id="radarCollectorProgress"></i></div>
+            <div id="radarCollectorLastRun" class="hint">暂无运行记录</div>
+          </div>
+          <div class="radar-collector-settings">
+            <label class="radar-check"><input type="checkbox" id="radarCollectorEnabled"> 自动定时运行</label>
+            <label>扫描模式<select id="radarCollectorMode" class="input select"><option value="broad">广泛发现</option><option value="focused">精准标题</option></select></label>
+            <label>间隔（小时）<input id="radarCollectorInterval" class="input" type="number" min="1" max="168" value="6"></label>
+            <label>每类扫描页数<input id="radarCollectorPages" class="input" type="number" min="1" max="25" value="5"></label>
+            <label class="radar-collector-regions">重点地区<input id="radarCollectorRegions" class="input" placeholder="河南、山东、江苏，用逗号分隔"></label>
+            <label>通用网页搜索<select id="radarCollectorWebProvider" class="input select"><option value="off">暂不启用</option><option value="brave">Brave Search API</option><option value="searxng">自建 SearXNG</option></select></label>
+            <label class="radar-collector-web-endpoint">SearXNG 地址<input id="radarCollectorWebEndpoint" class="input" placeholder="https://search.example.com/ 或本机地址"></label>
+            <label class="radar-collector-web-key">搜索 API 密钥<input id="radarCollectorWebApiKey" class="input" type="password" autocomplete="off" placeholder="留空则保留已保存密钥"></label>
+            <label>每轮搜索词<input id="radarCollectorWebQueries" class="input" type="number" min="1" max="20" value="6"></label>
+            <label>每词结果数<input id="radarCollectorWebResults" class="input" type="number" min="1" max="20" value="10"></label>
+            <button class="btn ghost small" id="radarCollectorBraveHelp">申请搜索密钥</button>
+            <button class="btn ghost small" id="radarCollectorWebTest">测试搜索</button>
+            <button class="btn ghost small" id="radarCollectorSave">保存设置</button>
+          </div>
+          <div id="radarCollectorMetrics" class="radar-collector-metrics">
+            <span>当前可跟进 <strong>0</strong></span><span>已入本地线索库 <strong>0</strong></span><span>历史/过期 <strong>0</strong></span>
+          </div>
+        </div>
+        <div id="radarCollectorSources" class="radar-collector-sources"></div>
+        <div id="radarCollectorItems" class="radar-collector-items"><div class="empty">暂无自动采集结果</div></div>
+      </section>
+
+      <div class="radar-workspace">
+        <section class="panel radar-discovery-panel">
+          <div class="panel-head">
+            <div><span>多渠道搜索任务</span><div class="hint">同时生成政府采购、公共资源、项目公示、地图和抖音搜索任务；企业公开采购由上方采集器自动处理</div></div>
+          </div>
+          <div class="radar-search-form">
+            <input id="radarRegion" class="input" placeholder="地区，例如：郑州、山东、佛山">
+            <select id="radarIntent" class="input select">
+              <option value="supplier">找厂家</option>
+              <option value="project">找项目需求</option>
+            </select>
+          </div>
+          <div id="radarSourceChoices" class="radar-source-choices"></div>
+          <div id="radarIndustryCards" class="radar-industry-cards"></div>
+        </section>
+
+        <section class="panel radar-import-panel">
+          <div class="panel-head">
+            <div><span>录入公开资料</span><div class="hint">可粘贴主页简介、作品文案或公开评论；空行可分隔多条线索</div></div>
+          </div>
+          <div class="radar-import-grid">
+            <select id="radarImportIndustry" class="input select"><option value="">自动识别行业</option></select>
+            <select id="radarSourceType" class="input select">
+              <option value="profile">主页简介</option>
+              <option value="video">作品文案/画面OCR</option>
+              <option value="comment">公开评论</option>
+              <option value="live">公开直播资料</option>
+              <option value="procurement">政府采购</option>
+              <option value="public_resource">公共资源交易</option>
+              <option value="web_project">全网公开项目</option>
+              <option value="approval">立项/环评公示</option>
+              <option value="subsidy">农业冷链公示</option>
+              <option value="map">地图企业</option>
+              <option value="ocr">图片 OCR</option>
+              <option value="manual">其他公开来源</option>
+            </select>
+            <input id="radarAccountName" class="input" placeholder="账号/企业名称（可选）">
+            <input id="radarImportRegion" class="input" placeholder="地区（可选）">
+            <input id="radarSourceUrl" class="input radar-wide" placeholder="来源链接（建议填写，便于复核）">
+            <textarea id="radarRawText" class="textarea radar-wide" rows="7" placeholder="示例：郑州某某地坪工程有限公司，承接环氧地坪、固化地坪施工，业务电话 138 0013 8000。"></textarea>
+          </div>
+          <div class="radar-import-actions">
+            <span class="hint" id="radarDataPath">数据库位置加载中...</span>
+            <button class="btn primary" id="radarImport">识别并入库</button>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel radar-tasks-panel">
+        <div class="panel-head radar-filter-bar">
+          <div><span>待检索渠道任务</span><div class="hint">有账号时在内置浏览器采集；未选账号则用系统浏览器打开，再粘贴文字或用截图 OCR 入库</div></div>
+          <button class="btn ghost small" id="radarReloadTasks">刷新任务</button>
+        </div>
+        <div id="radarDiscoveryTasks" class="radar-task-list"><div class="empty">尚未生成渠道任务</div></div>
+      </section>
+
+      <section class="panel radar-leads-panel">
+        <div class="panel-head radar-filter-bar">
+          <span>线索审核</span>
+          <select id="radarFilterIndustry" class="input select"><option value="">全部行业</option></select>
+          <select id="radarFilterStatus" class="input select"><option value="">全部状态</option></select>
+          <select id="radarFilterSource" class="input select"><option value="">全部来源</option></select>
+          <select id="radarFilterFreshness" class="input select">
+            <option value="actionable">当前有效</option>
+            <option value="30">最近30天</option>
+            <option value="60">最近60天</option>
+            <option value="90">最近90天</option>
+            <option value="180">最近180天</option>
+            <option value="historical">历史/已过期</option>
+            <option value="all">全部时间</option>
+          </select>
+          <label class="radar-check"><input type="checkbox" id="radarContactOnly"> 只看有联系方式</label>
+          <input id="radarKeyword" class="input" placeholder="搜索账号、地区、简介、完整号码">
+        </div>
+        <div id="radarLeadTable" class="table-wrap radar-table">
+          <div class="empty">正在加载商机线索...</div>
+        </div>
+      </section>
+    </div>
+
+    <div id="page-batch" class="page">
+      <div class="page-head">
+        <h1>批量发布</h1>
+        <p class="page-sub">多作品 × 多账号批量分发：每个作品独立图片/标题/正文/音乐，发到所有选中账号</p>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><span>目标账号</span><span class="hint" id="batchAccCount">未选择</span></div>
+        <div id="batchAccountGrid" class="account-grid">
+          <div class="empty">加载中...</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><span>批量设置（应用到所有作品）</span></div>
+        <div class="batch-bar">
+          <div class="batch-bar-row batch-pick-row">
+            <button class="btn primary" id="btnBatchAddImages">📁 选取图片（自动分组为作品）</button>
+            <button class="btn" id="btnBatchAddPost">添加空作品</button>
+            <span class="hint">可多选图片文件，或点「按文件夹」选择整个文件夹</span>
+          </div>
+          <div class="batch-bar-row">
+            <select id="batchRecognition" class="input select">
+              <option value="imagefile">按图片文件识别</option>
+              <option value="subdirectory">按子目录识别</option>
+            </select>
+            <input type="number" id="batchImagesPerPost" class="input input-num" min="1" value="1" title="每作品图片数">
+            <span class="hint">每篇作品图片数（默认 1 张 = 1 个作品）</span>
+          </div>
+          <div class="batch-bar-row">
+            <button class="btn" id="btnBatchSetTitle">批量设置标题</button>
+            <button class="btn" id="btnBatchSetDesc">批量设置文案</button>
+            <button class="btn" id="btnBatchSetTags">批量设置话题</button>
+            <select id="batchMusicMode" class="input select" title="音乐分配模式">
+              <option value="uniform">统一音乐</option>
+              <option value="random">每作品随机</option>
+            </select>
+            <button class="btn ghost small" id="btnApplyBatchMusic">选择音乐</button>
+            <button class="btn ghost small hidden" id="btnRandomBatchMusic">按分类随机</button>
+            <span id="batchMusicInfo" class="hint"></span>
+          </div>
+          <div class="batch-bar-row">
+            <select id="batchOrder" class="input select">
+              <option value="file">按作品顺序发布</option>
+              <option value="account">按账号顺序发布</option>
+            </select>
+          </div>
+          <div class="batch-bar-row batch-sched-row">
+            <span class="hint">定时调度：</span>
+            <select id="batchTimingMode" class="input select">
+              <option value="now">立即发布</option>
+              <option value="timed">定时发布</option>
+            </select>
+            <input type="datetime-local" id="batchStartTime" class="input" title="开始时间（默认当前时间+3分钟）">
+            <span class="hint">开始时间（默认 当前+3分钟）</span>
+          </div>
+          <div id="batchSchedConfig" class="hidden">
+            <div class="sched-card">
+              <div class="sched-card-title">调度参数</div>
+              <div class="batch-bar-row">
+                <span class="hint">均分模式：</span>
+                <select id="batchSchedMode" class="input select">
+                  <option value="even">均分（作品轮转分配给各账号）</option>
+                  <option value="all">全部（每个作品发到所有账号）</option>
+                </select>
+              </div>
+              <div class="batch-bar-row">
+                <label class="sched-param">
+                  <span class="form-label">每账号每日上限</span>
+                  <input type="number" id="batchDailyMax" class="input input-num" min="1" value="4">
+                </label>
+                <label class="sched-param">
+                  <span class="form-label">发布间隔（分钟）</span>
+                  <input type="number" id="batchPostGap" class="input input-num" min="1" value="80">
+                </label>
+                <label class="sched-param">
+                  <span class="form-label">账号间隔（分钟）</span>
+                  <input type="number" id="batchAccGap" class="input input-num" min="0" value="1">
+                </label>
+                <button class="btn ghost small" id="btnPreviewSchedule">预览计划</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <span>作品列表（<span id="batchPostCount">0</span> 个作品）</span>
+          <div class="form-row">
+            <button class="btn" id="btnBatchAddImages2">选取图片</button>
+            <button class="btn" id="btnBatchPickDir">按文件夹选取</button>
+            <button class="btn ghost small" id="btnBatchAddPost2">添加空作品</button>
+            <button class="btn ghost small" id="btnBatchClearPosts">清空作品</button>
+          </div>
+        </div>
+        <input type="file" id="batchFileInput" accept="image/*" multiple hidden>
+        <input type="file" id="batchDirInput" webkitdirectory directory hidden>
+        <div id="batchPostList" class="post-list">
+          <div class="empty">暂无作品。点击「选取图片」选择图片，将按每作品图数自动分组为多个作品</div>
+        </div>
+      </div>
+      <div class="action-bar">
+        <button class="btn primary big" id="btnBatchPublish">批量发布（作品 × 账号）</button>
+        <span id="batchPublishMsg" class="msg"></span>
+      </div>
+    </div>
+
+    <div id="page-stats" class="page">
+      <div class="page-head">
+        <h1>数据统计</h1>
+        <p class="page-sub">发布任务总览、按账号统计与近 7 天趋势</p>
+      </div>
+      <div class="action-bar">
+        <button class="btn ghost" id="btnRefreshStats">刷新</button>
+        <span class="stat" id="statsUpdated"></span>
+      </div>
+      <div id="statCards" class="stat-cards"></div>
+      <div class="panel">
+        <div class="panel-head"><span>近 7 天趋势</span></div>
+        <div id="trendChart" class="trend-chart">
+          <div class="empty">暂无数据</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><span>按账号统计</span></div>
+        <div id="statsTable" class="table-wrap">
+          <div class="empty">暂无数据</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><span>失败明细</span></div>
+        <div id="failTable" class="table-wrap">
+          <div class="empty">暂无失败任务</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="page-settings" class="page">
+      <div class="page-head">
+        <h1>设置</h1>
+        <p class="page-sub">运行参数</p>
+      </div>
+      <div class="panel">
+        <div class="form">
+          <label class="form-label">发布间隔（秒）</label>
+          <input type="number" id="inputInterval" class="input" min="30" value="60">
+          <label class="form-label">同一账号作品间隔（分钟）</label>
+          <input type="number" id="inputAccountGap" class="input" min="30" value="80">
+          <label class="form-label">每账号每日发布上限</label>
+          <input type="number" id="inputDailyMax" class="input" min="1" max="20" value="4">
+          <div class="hint">稳妥策略：只在 09:00—21:30 发布；超出间隔或每日上限的任务会自动安全排队，不会丢失。</div>
+          <label class="form-label">批量任务初始状态</label>
+          <select id="selTaskInitialStatus" class="input select">
+            <option value="0">待发布（创建后立即排队）</option>
+            <option value="3">暂停（创建后手动启动）</option>
+          </select>
+          <label class="form-label">远程调试</label>
+          <input type="text" id="inputDebugPort" class="input" value="默认关闭（仅测试时临时开启）" readonly>
+          <div class="form-row">
+            <button class="btn" id="btnSaveSettings">保存设置</button>
+            <span class="msg" id="settingsMsg"></span>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <span>发布日志</span>
+          <div class="form-row">
+            <button class="btn ghost small" id="btnRefreshLog">刷新</button>
+            <button class="btn ghost small" id="btnClearLogView">清空视图</button>
+          </div>
+        </div>
+        <pre id="logView" class="log-view">加载中...</pre>
+      </div>
+    </div>
+  </main>
+  </div>
+</div>
+<div id="toast" class="toast hidden"></div>
+<div id="groupsModal" class="modal hidden">
+  <div class="modal-box modal-sm">
+    <div class="modal-head">
+      <span>分组管理</span>
+      <button class="btn ghost small" id="btnGroupsClose">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <input type="text" id="newGroupName" class="input" placeholder="新分组名称">
+        <button class="btn" id="btnAddGroup">添加</button>
+      </div>
+      <div id="groupsList" class="draft-list" style="margin-top:10px">
+        <div class="empty">暂无分组</div>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="scheduleModal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>定时发布计划预览</span>
+      <button class="btn ghost small" id="btnScheduleClose">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="login-tip" id="scheduleTip"></div>
+      <div id="scheduleTable" class="table-wrap" style="margin-top:10px;max-height:50vh;overflow-y:auto">
+        <div class="empty">请先选择账号和添加作品</div>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="resultModal" class="modal hidden">
+  <div class="modal-box modal-sm">
+    <div class="modal-head">
+      <span id="resultTitle">发布完成</span>
+      <button class="btn ghost small" id="btnResultClose">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div id="resultContent" class="login-tip" style="font-size:14px;padding:14px"></div>
+      <div class="form-row" style="justify-content:flex-end">
+        <button class="btn primary" id="btnResultGoTasks">查看任务记录</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="batchSetModal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span id="batchSetTitle">批量设置</span>
+      <button class="btn ghost small" id="btnBatchSetClose">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="login-tip" id="batchSetTip">每行一条，按换行自动分割，将逐条填充到各作品（第 1 行 → 作品 1，第 2 行 → 作品 2...）</div>
+      <div class="form-row">
+        <span class="hint">分割方式：</span>
+        <select id="batchSetSplit" class="input select">
+          <option value="newline">按换行分割</option>
+          <option value="sep">按 ---- 分隔符分割</option>
+        </select>
+      </div>
+      <textarea id="batchSetInput" class="textarea" rows="12" placeholder="每行一条 / 用 ---- 分隔多条"></textarea>
+      <div class="form-row" style="justify-content:flex-end">
+        <button class="btn primary" id="btnBatchSetConfirm">确定</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="loginModal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>添加抖音账号</span>
+      <button class="btn ghost small" id="btnLoginClose">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="login-tip">请在弹出的页面中扫码登录抖音。登录成功后本窗口会自动关闭。</div>
+      <webview id="loginWebview" class="login-webview"></webview>
+    </div>
+  </div>
+</div>
+<div id="musicModal" class="modal hidden">
+  <div class="modal-box music-modal-box">
+    <div class="modal-head">
+      <span>选择音乐</span>
+      <button class="btn ghost small" id="btnMusicModalClose">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div class="music-bar">
+        <input type="text" id="musicModalSearch" class="input" placeholder="搜索歌曲名 / 歌手（可选）">
+        <button class="btn" id="btnMusicModalSearch">搜索</button>
+      </div>
+      <div id="musicModalCats" class="music-cats"></div>
+      <div id="musicModalList" class="music-list"></div>
+    </div>
+  </div>
+</div>
+<div id="draftsModal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>草稿箱</span>
+      <button class="btn ghost small" id="btnDraftsClose">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div id="draftsList" class="draft-list">
+        <div class="empty">暂无草稿</div>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="previewModal" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head">
+      <span>发布预览</span>
+      <button class="btn ghost small" id="btnPreviewClose">关闭</button>
+    </div>
+    <div class="modal-body">
+      <div id="previewContent" class="preview-content"></div>
+      <div class="form-row" style="justify-content:flex-end">
+        <button class="btn primary" id="btnPreviewConfirm">确认发布</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="radarLeadModal" class="modal hidden">
+  <div class="modal-box radar-modal-box">
+    <div class="modal-head">
+      <span>审核商机线索</span>
+      <button class="btn ghost small" id="radarModalClose">关闭</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="radarEditId">
+      <div class="radar-edit-grid">
+        <label>账号/企业名称<input id="radarEditAccount" class="input"></label>
+        <label>地区<input id="radarEditRegion" class="input"></label>
+        <label>行业<select id="radarEditIndustry" class="input select"></select></label>
+        <label>状态<select id="radarEditStatus" class="input select"></select></label>
+        <label>负责业务员<input id="radarEditAssignee" class="input" placeholder="例如：张三"></label>
+        <label class="radar-check radar-business-confirm"><input type="checkbox" id="radarEditBusiness"> 确认属于公开商务联系方式</label>
+        <label class="radar-edit-wide">跟进备注<textarea id="radarEditNotes" class="textarea" rows="4"></textarea></label>
+      </div>
+      <div id="radarEditEvidence" class="radar-evidence"></div>
+      <div class="hint radar-audit-title">操作审计</div>
+      <div id="radarAuditLog" class="radar-evidence radar-audit-log">暂无记录</div>
+      <div class="radar-modal-actions">
+        <button class="btn ghost" id="radarOptOut">标记拒绝联系</button>
+        <button class="btn ghost" id="radarOpenSource">打开来源</button>
+        <button class="btn" id="radarReveal" hidden>号码已完整展示</button>
+        <button class="btn primary" id="radarSaveLead">保存审核结果</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="assets/app.js"></script>
+<script src="assets/lead-radar.js"></script>
+</body>
+</html>
