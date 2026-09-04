@@ -34,6 +34,25 @@ test('merges customers with the same WeChat identifier', () => {
   });
 });
 
+test('merges when both strong identifiers match the same customer', () => {
+  const { decideDuplicate } = require('../src/domain/customer');
+  const existing = [{ customerId: 'cust-both', phone: '13800138000', wechat: 'wx_alice' }];
+  assert.deepEqual(decideDuplicate({ phone: '13800138000', wechat: 'WX_ALICE' }, existing), {
+    decision: 'merge', customerId: 'cust-both', reasons: ['PHONE_MATCH', 'WECHAT_MATCH'],
+  });
+});
+
+test('requests review when strong identifiers point to different customers', () => {
+  const { decideDuplicate } = require('../src/domain/customer');
+  const existing = [
+    { customerId: 'cust-phone', phone: '13800138000' },
+    { customerId: 'cust-wechat', wechat: 'wx_alice' },
+  ];
+  assert.deepEqual(decideDuplicate({ phone: '13800138000', wechat: 'wx_alice' }, existing), {
+    decision: 'review', customerId: null, reasons: ['STRONG_IDENTITY_CONFLICT'],
+  });
+});
+
 test('requests review when only ID last four digits match', () => {
   const { decideDuplicate } = require('../src/domain/customer');
   const existing = [{ customerId: 'cust-3', idLast4: '1234', nickname: '旧名' }];
@@ -54,9 +73,11 @@ test('produces field-prefixed stable hashes and blanks for missing fields', () =
   const { customerFingerprint } = require('../src/domain/customer');
   const first = customerFingerprint({ phone: '+86 138-0013-8000', wechat: ' wx_Alice ', idLast4: '1234' });
   assert.deepEqual(Object.keys(first).sort(), ['idLast4Hash', 'phoneHash', 'wechatHash']);
-  assert.match(first.phoneHash, /^[0-9a-f]{64}$/);
+  assert.equal(first.phoneHash, '39f2f883125d1af036b5d0032e64ad2952d2fa0d66b09dcd29398207b8fd1ae3');
   assert.match(first.wechatHash, /^[0-9a-f]{64}$/);
+  assert.equal(first.idLast4Hash, '2e6dba3b106e684314357f8bc4b69baf58c67417f6d23a0ab5b86c71af080c68');
   assert.match(first.idLast4Hash, /^[0-9a-f]{64}$/);
+  assert.notEqual(customerFingerprint({ phone: '13800138000' }).phoneHash, customerFingerprint({ wechat: '13800138000' }).wechatHash);
   assert.notEqual(first.phoneHash, first.wechatHash);
   assert.deepEqual(customerFingerprint({}), { phoneHash: '', wechatHash: '', idLast4Hash: '' });
 });

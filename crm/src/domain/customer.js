@@ -38,13 +38,32 @@ function decideDuplicate(candidate = {}, existing = []) {
   const candidateWechat = normalizeWechat(candidate.wechat);
   const candidateIdLast4 = normalizeIdLast4(candidate.idLast4);
 
+  const strongMatches = new Map();
+  const identityKey = (customer) => {
+    const id = customer.customerId ?? customer.id;
+    return id ? `id:${id}` : customer;
+  };
+
   for (const customer of existing) {
     const reasons = [];
     if (candidatePhone && candidatePhone === normalizePhone(customer.phone)) reasons.push('PHONE_MATCH');
     if (candidateWechat && candidateWechat === normalizeWechat(customer.wechat)) reasons.push('WECHAT_MATCH');
     if (reasons.length > 0) {
-      return { decision: 'merge', customerId: customer.customerId ?? customer.id ?? null, reasons };
+      const key = identityKey(customer);
+      const match = strongMatches.get(key) || { customer, reasons: [] };
+      for (const reason of reasons) {
+        if (!match.reasons.includes(reason)) match.reasons.push(reason);
+      }
+      strongMatches.set(key, match);
     }
+  }
+
+  if (strongMatches.size > 1) {
+    return { decision: 'review', customerId: null, reasons: ['STRONG_IDENTITY_CONFLICT'] };
+  }
+  if (strongMatches.size === 1) {
+    const { customer, reasons } = [...strongMatches.values()][0];
+    return { decision: 'merge', customerId: customer.customerId ?? customer.id ?? null, reasons };
   }
 
   for (const customer of existing) {
