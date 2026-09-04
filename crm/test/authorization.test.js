@@ -106,6 +106,17 @@ test('masking fully masks non-mobile phone values even when long enough', () => 
   }
 });
 
+test('masking treats numeric and boolean sensitive values as invalid, not missing', () => {
+  const phoneZero = maskSensitiveCustomer({ phone: 0, idNumber: '', campusId: 'campus-a', ownerId: 'u-1' }, actor(['service']));
+  const phoneFalse = maskSensitiveCustomer({ phone: false, idNumber: '', campusId: 'campus-a', ownerId: 'u-1' }, actor(['service']));
+  const idZero = maskSensitiveCustomer({ phone: '', idNumber: 0, campusId: 'campus-a', ownerId: 'u-1' }, actor(['service']));
+  const idFalse = maskSensitiveCustomer({ phone: '', idNumber: false, campusId: 'campus-a', ownerId: 'u-1' }, actor(['service']));
+  assert.equal(phoneZero.phone, '****');
+  assert.equal(phoneFalse.phone, '****');
+  assert.equal(idZero.idNumber, '****');
+  assert.equal(idFalse.idNumber, '****');
+});
+
 test('inherited resource scope fields never authorize access', () => {
   const serviceResource = Object.create({ campusId: 'campus-a', ownerId: 'u-1' });
   const supervisorResource = Object.create({ campusId: 'campus-a', teamId: 'team-a' });

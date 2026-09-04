@@ -80,8 +80,8 @@ function maskSensitiveCustomer(customer, actor) {
   assertAllowed(actor, 'customer.read', customer);
   const view = { ...customer };
   if (can(actor, 'customer.sensitive.read', customer)) return view;
-  view.phone = can(actor, 'customer.phone.read', customer) ? (customer.phone || '') : maskPhone(customer.phone || '');
-  view.idNumber = maskIdNumber(customer.idNumber || '');
+  view.phone = can(actor, 'customer.phone.read', customer) ? (customer.phone ?? '') : maskPhone(customer.phone ?? '');
+  view.idNumber = maskIdNumber(customer.idNumber ?? '');
   return view;
 }
 
