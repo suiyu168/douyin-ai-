@@ -6,16 +6,21 @@ function nonBlank(value) {
   return typeof value === 'string' && value.trim() !== '';
 }
 
+function own(object, key) {
+  return object != null && Object.prototype.hasOwnProperty.call(object, key);
+}
+
 function validActor(actor) {
-  return actor && nonBlank(actor.id) && Array.isArray(actor.roles) && Array.isArray(actor.campusIds);
+  return actor && own(actor, 'id') && own(actor, 'roles') && own(actor, 'campusIds') &&
+    nonBlank(actor.id) && Array.isArray(actor.roles) && Array.isArray(actor.campusIds);
 }
 
 function campusMatches(actor, resource) {
-  return nonBlank(resource && resource.campusId) && actor.campusIds.includes(resource.campusId);
+  return own(resource, 'campusId') && nonBlank(resource.campusId) && actor.campusIds.includes(resource.campusId);
 }
 
 function ownerMatches(actor, resource) {
-  return nonBlank(resource && resource.ownerId) && resource.ownerId === actor.id;
+  return own(resource, 'ownerId') && nonBlank(resource.ownerId) && resource.ownerId === actor.id;
 }
 
 function roleAllows(actor, role, action, resource) {
@@ -25,8 +30,8 @@ function roleAllows(actor, role, action, resource) {
   }
   if (role === 'supervisor') {
     return ['customer.read', 'customer.write', 'conversation.read'].includes(action) &&
-      campusMatches(actor, resource) && Array.isArray(actor.teamIds) &&
-      nonBlank(resource && resource.teamId) && actor.teamIds.includes(resource.teamId);
+      campusMatches(actor, resource) && own(actor, 'teamIds') && Array.isArray(actor.teamIds) &&
+      own(resource, 'teamId') && nonBlank(resource.teamId) && actor.teamIds.includes(resource.teamId);
   }
   if (role === 'service') {
     return ['customer.read', 'customer.write', 'conversation.read'].includes(action) &&
@@ -38,7 +43,7 @@ function roleAllows(actor, role, action, resource) {
   }
   if (role === 'teacher') {
     return action === 'student.read' && campusMatches(actor, resource) &&
-      nonBlank(resource && resource.assignedTeacherId) && resource.assignedTeacherId === actor.id;
+      own(resource, 'assignedTeacherId') && nonBlank(resource.assignedTeacherId) && resource.assignedTeacherId === actor.id;
   }
   if (role === 'finance') {
     return ['order.read', 'customer.read', 'customer.phone.read'].includes(action) && campusMatches(actor, resource);
@@ -61,7 +66,7 @@ function assertAllowed(actor, action, resource) {
 
 function maskPhone(phone) {
   if (phone === '') return '';
-  if (typeof phone !== 'string' || phone.length < 7) return '****';
+  if (typeof phone !== 'string' || !/^1[3-9]\d{9}$/.test(phone)) return '****';
   return `${phone.slice(0, 3)}****${phone.slice(-4)}`;
 }
 

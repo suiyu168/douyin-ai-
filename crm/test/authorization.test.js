@@ -99,6 +99,24 @@ test('masking preserves empty values and fully masks short/invalid values', () =
   assert.equal(maskSensitiveCustomer({ phone: '123', idNumber: '123', campusId: 'campus-a', ownerId: 'u-1' }, actor(['service'])).phone, '****');
 });
 
+test('masking fully masks non-mobile phone values even when long enough', () => {
+  for (const phone of ['abcdefghijk', '13800138']) {
+    const view = maskSensitiveCustomer({ phone, idNumber: '', campusId: 'campus-a', ownerId: 'u-1' }, actor(['service']));
+    assert.equal(view.phone, '****');
+  }
+});
+
+test('inherited resource scope fields never authorize access', () => {
+  const serviceResource = Object.create({ campusId: 'campus-a', ownerId: 'u-1' });
+  const supervisorResource = Object.create({ campusId: 'campus-a', teamId: 'team-a' });
+  const teacherResource = Object.create({ campusId: 'campus-a', assignedTeacherId: 'u-1' });
+  const financeResource = Object.create({ campusId: 'campus-a' });
+  assert.equal(can(actor(['service']), 'customer.read', serviceResource), false);
+  assert.equal(can(actor(['supervisor'], { teamIds: ['team-a'] }), 'customer.read', supervisorResource), false);
+  assert.equal(can(actor(['teacher']), 'student.read', teacherResource), false);
+  assert.equal(can(actor(['finance']), 'order.read', financeResource), false);
+});
+
 test('masking rejects viewers outside customer scope', () => {
   assert.throws(() => maskSensitiveCustomer({ ...customer, campusId: 'campus-b', ownerId: 'u-2' }, actor(['service'])), (error) => error.code === 'FORBIDDEN');
 });
