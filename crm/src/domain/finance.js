@@ -22,8 +22,8 @@ function freezeDeep(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) { for (const child of Object.values(value)) freezeDeep(child); Object.freeze(value); }
   return value;
 }
-function safeAdd(a, b) { const result = a + b; if (!Number.isSafeInteger(result)) fail('INVALID_ORDER'); return result; }
-function safeSub(a, b) { const result = a - b; if (!Number.isSafeInteger(result)) fail('INVALID_ORDER'); return result; }
+function safeNumber(value) { if (value < -BigInt(Number.MAX_SAFE_INTEGER) || value > BigInt(Number.MAX_SAFE_INTEGER)) fail('INVALID_ORDER'); return Number(value); }
+function snapshotEntry(entry) { const copy = cloneValue(entry, 'INVALID_LEDGER_ENTRY'); copy.occurredAt = new Date(entry.occurredAt).toISOString(); return freezeDeep(copy); }
 
 function quoteOrder(input) {
   if (!input || typeof input !== 'object' || !own(input, 'listPriceCents')) fail('INVALID_ORDER');
@@ -37,7 +37,7 @@ function quoteOrder(input) {
   order.discountCents = discount;
   order.agreedPriceCents = input.listPriceCents - discount;
   order.ledger = Object.freeze([]);
-  return order;
+  return freezeDeep(order);
 }
 
 function validateEntry(entry) {
@@ -55,28 +55,30 @@ function validateOrder(order) {
 function appendLedgerEntry(order, entry) {
   validateOrder(order); validateEntry(entry);
   if (order.ledger.some(item => item.idempotencyKey === entry.idempotencyKey)) fail('DUPLICATE_LEDGER_ENTRY');
-  const copy = cloneValue(entry, 'INVALID_LEDGER_ENTRY');
-  copy.occurredAt = isoDate(entry.occurredAt);
-  const ledger = order.ledger.map(item => freezeDeep(cloneValue(item, 'INVALID_LEDGER_ENTRY'))).concat(freezeDeep(copy));
-  return { ...order, ledger: Object.freeze(ledger) };
+  const result = {};
+  for (const key of Object.keys(order)) if (key !== 'ledger' && key !== 'dueAt') result[key] = cloneValue(order[key], 'INVALID_ORDER');
+  if (order.dueAt !== undefined) result.dueAt = validDate(order.dueAt) ? new Date(order.dueAt).toISOString() : undefined;
+  const ledger = order.ledger.map(snapshotEntry).concat(snapshotEntry(entry));
+  result.ledger = Object.freeze(ledger);
+  return freezeDeep(result);
 }
 
 function summarizeOrder(order, now) {
   validateOrder(order);
-  let receivable = order.agreedPriceCents, received = 0, refunded = 0, reversed = 0;
+  let receivable = BigInt(order.agreedPriceCents), received = 0n, refunded = 0n, reversed = 0n;
   for (const entry of order.ledger) {
     if (entry.status !== 'confirmed') continue;
-    if (entry.type === 'payment') received = safeAdd(received, entry.amountCents);
-    if (entry.type === 'refund') refunded = safeAdd(refunded, entry.amountCents);
-    if (entry.type === 'reversal') reversed = safeAdd(reversed, entry.amountCents);
-    if (entry.type === 'adjustment') receivable = entry.direction === 'increase' ? safeAdd(receivable, entry.amountCents) : safeSub(receivable, entry.amountCents);
+    if (entry.type === 'payment') received += BigInt(entry.amountCents);
+    if (entry.type === 'refund') refunded += BigInt(entry.amountCents);
+    if (entry.type === 'reversal') reversed += BigInt(entry.amountCents);
+    if (entry.type === 'adjustment') receivable += entry.direction === 'increase' ? BigInt(entry.amountCents) : -BigInt(entry.amountCents);
   }
-  receivable = Math.max(0, receivable);
-  const netReceived = safeSub(safeSub(received, refunded), reversed);
-  const outstanding = Math.max(0, safeSub(receivable, netReceived));
+  receivable = receivable < 0n ? 0n : receivable;
+  const netReceived = received - refunded - reversed;
+  const outstanding = receivable - netReceived < 0n ? 0n : receivable - netReceived;
   const due = validDate(order.dueAt) ? new Date(order.dueAt).getTime() : NaN;
   const current = validDate(now) ? new Date(now).getTime() : NaN;
-  return { agreed: order.agreedPriceCents, receivable, received, refunded, reversed, outstanding, netReceived, overdue: outstanding > 0 && Number.isFinite(due) && Number.isFinite(current) && current > due };
+  return { agreed: order.agreedPriceCents, receivable: safeNumber(receivable), received: safeNumber(received), refunded: safeNumber(refunded), reversed: safeNumber(reversed), outstanding: safeNumber(outstanding), netReceived: safeNumber(netReceived), overdue: outstanding > 0n && Number.isFinite(due) && Number.isFinite(current) && current > due };
 }
 
 module.exports = { quoteOrder, appendLedgerEntry, summarizeOrder };

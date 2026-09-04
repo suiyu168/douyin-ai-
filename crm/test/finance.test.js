@@ -112,3 +112,22 @@ test('rejects inherited required fields on entries and prebuilt orders', () => {
   const inheritedOrder = Object.create({ agreedPriceCents: 100, ledger: [] });
   assert.throws(() => summarizeOrder(inheritedOrder), { code: 'INVALID_ORDER' });
 });
+
+test('append snapshots a prebuilt order and truly Date occurredAt', () => {
+  const sourceDate = new Date('2026-08-02T00:00:00Z');
+  const source = { agreedPriceCents: 100, dueAt: sourceDate, meta: { nested: { ok: true } }, ledger: [{ ...payment('old', 10), occurredAt: sourceDate, meta: { tags: ['old'] } }] };
+  const result = appendLedgerEntry(source, { ...payment('new', 10), occurredAt: sourceDate });
+  sourceDate.setTime(0); source.meta.nested.ok = false; source.ledger[0].meta.tags.push('mutated');
+  assert.equal(result.dueAt, '2026-08-02T00:00:00.000Z');
+  assert.equal(result.ledger[0].occurredAt, '2026-08-02T00:00:00.000Z');
+  assert.deepEqual(result.meta, { nested: { ok: true } }); assert.deepEqual(result.ledger[0].meta, { tags: ['old'] });
+  assert.ok(Object.isFrozen(result.meta.nested)); assert.ok(Object.isFrozen(result.ledger[0].meta.tags));
+});
+
+test('permits safe adjustment clamping despite negative intermediate values', () => {
+  let order = quoteOrder({ listPriceCents: 0 });
+  order = appendLedgerEntry(order, { type: 'adjustment', direction: 'decrease', idempotencyKey: 'down', amountCents: Number.MAX_SAFE_INTEGER, status: 'confirmed', occurredAt: '2026-08-01' });
+  assert.equal(summarizeOrder(order).receivable, 0);
+  order = appendLedgerEntry(order, { type: 'adjustment', direction: 'increase', idempotencyKey: 'up', amountCents: Number.MAX_SAFE_INTEGER, status: 'confirmed', occurredAt: '2026-08-01' });
+  assert.equal(summarizeOrder(order).receivable, 0);
+});
