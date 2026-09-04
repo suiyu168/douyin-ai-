@@ -60,3 +60,55 @@ test('requires approval for positive discounts and rejects invalid money', () =>
   for (const value of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN]) assert.throws(() => quoteOrder({ listPriceCents: value }), { code: 'INVALID_MONEY' });
   assert.throws(() => quoteOrder({ listPriceCents: 10, discountCents: 11, discountApproved: true }), { code: 'INVALID_MONEY' });
 });
+
+test('snapshots dates and recursively freezes metadata', () => {
+  const due = new Date('2026-09-01T00:00:00Z');
+  const meta = { nested: { tags: ['a'] } };
+  const order = quoteOrder({ listPriceCents: 100, dueAt: due, meta });
+  due.setTime(0); meta.nested.tags.push('b');
+  assert.equal(order.dueAt, '2026-09-01T00:00:00.000Z');
+  assert.deepEqual(order.meta, { nested: { tags: ['a'] } });
+  const entryMeta = { nested: { tags: ['x'] } };
+  const returned = appendLedgerEntry(order, { ...payment('snap', 10), meta: entryMeta });
+  entryMeta.nested.tags.push('y');
+  assert.deepEqual(returned.ledger[0].meta, { nested: { tags: ['x'] } });
+  assert.equal(returned.ledger[0].occurredAt, '2026-08-01T00:00:00.000Z');
+  assert.ok(Object.isFrozen(returned.ledger[0].meta.nested.tags));
+});
+
+test('rejects arithmetic overflow in confirmed aggregates', () => {
+  const max = Number.MAX_SAFE_INTEGER;
+  let order = quoteOrder({ listPriceCents: max });
+  assert.throws(() => summarizeOrder(appendLedgerEntry(order, { type: 'adjustment', direction: 'increase', idempotencyKey: 'inc', amountCents: 1, status: 'confirmed', occurredAt: '2026-08-01' })), { code: 'INVALID_ORDER' });
+  order = quoteOrder({ listPriceCents: 1 });
+  assert.throws(() => summarizeOrder(appendLedgerEntry(appendLedgerEntry(order, payment('a', max)), payment('b', 1))), { code: 'INVALID_ORDER' });
+  order = quoteOrder({ listPriceCents: 1 });
+  assert.throws(() => summarizeOrder(appendLedgerEntry(appendLedgerEntry(order, { type: 'refund', idempotencyKey: 'r1', amountCents: max, status: 'confirmed', occurredAt: '2026-08-01' }), { type: 'refund', idempotencyKey: 'r2', amountCents: 1, status: 'confirmed', occurredAt: '2026-08-01' })), { code: 'INVALID_ORDER' });
+});
+
+test('duplicate keys include pending and rejected entries and payment direction is ignored', () => {
+  for (const status of ['pending', 'rejected']) {
+    const order = appendLedgerEntry(quoteOrder({ listPriceCents: 100 }), payment('dup', 10, status));
+    assert.throws(() => appendLedgerEntry(order, payment('dup', 20)), { code: 'DUPLICATE_LEDGER_ENTRY' });
+  }
+  assert.throws(() => appendLedgerEntry(quoteOrder({ listPriceCents: 100 }), payment('bad-status', 1, 'settled')), { code: 'INVALID_LEDGER_ENTRY' });
+  const entry = { ...payment('direction', 10), direction: 'decrease' };
+  assert.equal(summarizeOrder(appendLedgerEntry(quoteOrder({ listPriceCents: 100 }), entry)).received, 10);
+});
+
+test('uses the agreed 950000 literal for refund and adjustment summaries', () => {
+  let order = quoteOrder({ listPriceCents: 1_000_000, discountCents: 50_000, discountApproved: true });
+  for (const entry of [payment('paid', 500_000), { type: 'refund', idempotencyKey: 'refund', amountCents: 50_000, status: 'confirmed', occurredAt: '2026-08-01' }, { type: 'reversal', idempotencyKey: 'reverse', amountCents: 20_000, status: 'confirmed', occurredAt: '2026-08-01' }]) order = appendLedgerEntry(order, entry);
+  assert.equal(summarizeOrder(order).received, 500_000); assert.equal(summarizeOrder(order).refunded, 50_000); assert.equal(summarizeOrder(order).reversed, 20_000); assert.equal(summarizeOrder(order).netReceived, 430_000); assert.equal(summarizeOrder(order).outstanding, 520_000);
+  order = quoteOrder({ listPriceCents: 1_000_000, discountCents: 50_000, discountApproved: true });
+  order = appendLedgerEntry(order, { type: 'adjustment', direction: 'increase', idempotencyKey: 'up', amountCents: 30_000, status: 'confirmed', occurredAt: '2026-08-01' });
+  order = appendLedgerEntry(order, { type: 'adjustment', direction: 'decrease', idempotencyKey: 'down', amountCents: 10_000, status: 'confirmed', occurredAt: '2026-08-01' });
+  assert.equal(summarizeOrder(order).receivable, 970_000);
+});
+
+test('rejects inherited required fields on entries and prebuilt orders', () => {
+  const proto = payment('inherited', 1); const inheritedEntry = Object.create(proto);
+  assert.throws(() => appendLedgerEntry(quoteOrder({ listPriceCents: 100 }), inheritedEntry), { code: 'INVALID_LEDGER_ENTRY' });
+  const inheritedOrder = Object.create({ agreedPriceCents: 100, ledger: [] });
+  assert.throws(() => summarizeOrder(inheritedOrder), { code: 'INVALID_ORDER' });
+});
