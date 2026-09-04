@@ -20,6 +20,9 @@
 - 只有已审核、已生效且未过期的知识版本可被自动回复引用。
 - 测试数据必须是虚构数据，仓库不得包含真实客户资料、Cookie、密钥或支付凭据。
 - UI 延续旧软件深色、左侧导航、卡片与状态徽章的视觉语言，但业务文案必须全部替换为成人学历提升 CRM。
+- 客户、订单、会话和台账主键由服务端生成；客户端 requestId 只做幂等键，跨请求冲突必须拒绝而不是覆盖既有记录。
+- Cookie、渠道令牌、模型密钥和支付凭据不得返回浏览器；日志只记录脱敏、截断后的结构化摘要并实施轮转。
+- 后续 Excel/CSV 导出必须中和以 `=`、`+`、`-`、`@` 开头的公式单元格；备份前必须按数据库大小检查可用磁盘空间。
 
 ---
 
@@ -202,6 +205,7 @@
 - Consumes: Tasks 1-4 的所有领域接口。
 - Produces: `createStore(dbPath)`、`createCrmService({ store, clock })`；service 暴露 `importCustomer`、`listCustomers`、`createOrder`、`appendPayment`、`triageConversation`、`dashboard`。
 - 每个写操作必须接收 `actor` 和 `requestId`，并追加包含操作者、动作、对象、前后摘要、时间和 requestId 的审计事件。
+- 所有实体 ID 由 service/store 生成；重复 requestId 返回原操作结果，任何跨请求实体 ID 冲突均返回错误且不得 UPSERT 覆盖业务载荷。
 
 - [ ] **Step 1: 写迁移与跨重启持久化失败测试**
 
@@ -222,7 +226,7 @@
 
 - [ ] **Step 5: 实现客户、订单与资金服务事务**
 
-  所有去重判断和写入处于同一事务；`idempotencyKey` 在数据库中唯一；服务端调用 Task 2 权限，不信任前端角色声明之外的数据范围。
+  所有去重判断和写入处于同一事务；`idempotencyKey` 在数据库中唯一；服务端生成实体 ID；服务端调用 Task 2 权限，不信任前端角色声明之外的数据范围。
 
 - [ ] **Step 6: 写 AI 降级与仪表盘失败测试**
 
