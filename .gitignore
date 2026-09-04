@@ -34,3 +34,5 @@ node_modules/
 .playwright-cli/
 .worktrees/
 .superpowers/
+.pnpm-store/
+.tools/
