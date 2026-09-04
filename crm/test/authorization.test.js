@@ -117,6 +117,23 @@ test('masking treats numeric and boolean sensitive values as invalid, not missin
   assert.equal(idFalse.idNumber, '****');
 });
 
+test('admin masking normalizes only nullish sensitive fields without mutating input', () => {
+  const input = { phone: null, idNumber: undefined };
+  const view = maskSensitiveCustomer(input, actor(['admin']));
+  assert.equal(view.phone, '');
+  assert.equal(view.idNumber, '');
+  assert.ok(Object.prototype.hasOwnProperty.call(input, 'idNumber'));
+  assert.equal(input.phone, null);
+  assert.equal(input.idNumber, undefined);
+
+  const preserved = maskSensitiveCustomer({ phone: '', idNumber: '', campusId: 'campus-a' }, actor(['admin']));
+  assert.equal(preserved.phone, '');
+  assert.equal(preserved.idNumber, '');
+  const unusual = maskSensitiveCustomer({ phone: 0, idNumber: false, campusId: 'campus-a' }, actor(['admin']));
+  assert.equal(unusual.phone, 0);
+  assert.equal(unusual.idNumber, false);
+});
+
 test('inherited resource scope fields never authorize access', () => {
   const serviceResource = Object.create({ campusId: 'campus-a', ownerId: 'u-1' });
   const supervisorResource = Object.create({ campusId: 'campus-a', teamId: 'team-a' });
