@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const vm = require('node:vm');
 
 const { isKnowledgeActive, triageMessage } = require('../src/domain/ai-triage');
 
@@ -145,4 +146,32 @@ test('does not trust an overridden getTime on an invalid effective date', () => 
   const citation = { ...active(), effectiveAt: invalidEffective };
   assert.equal(isKnowledgeActive(citation, now), false);
   assert.deepEqual(triageMessage({ message: '普通问题', confidence: 0.9, citations: [citation], now }), { mode: 'suggestion', reasons: ['NO_VALID_CITATION'], citations: [] });
+});
+
+test('accepts cross-realm and re-prototyped real Dates but rejects fakes and Date proxies', () => {
+  const crossRealm = vm.runInNewContext("new Date('2026-08-01T00:00:00Z')");
+  const rePrototyped = new Date('2026-08-01T00:00:00Z');
+  Object.setPrototypeOf(rePrototyped, {});
+  assert.equal(isKnowledgeActive({ ...active(), effectiveAt: crossRealm }, now), true);
+  assert.equal(isKnowledgeActive({ ...active(), effectiveAt: rePrototyped }, now), true);
+  assert.equal(isKnowledgeActive({ ...active(), effectiveAt: Object.create(Date.prototype) }, now), false);
+  assert.equal(isKnowledgeActive({ ...active(), effectiveAt: new Proxy(new Date('2026-08-01T00:00:00Z'), {}) }, now), false);
+});
+
+test('enumerates only own numeric citation keys in ascending index order', () => {
+  const citations = [];
+  citations.length = 4;
+  citations[3] = active('three');
+  citations[1] = active('one');
+  Object.defineProperty(citations, '2', { configurable: true, enumerable: false, writable: true, value: active('two') });
+  citations.note = active('note');
+  assert.deepEqual(triageMessage({ message: '普通问题', confidence: 0.9, citations, now }).citations, ['one', 'two', 'three']);
+});
+
+test('does not scan a maximum-length empty array or non-index keys', () => {
+  const citations = [];
+  citations.length = 0xffffffff;
+  Object.defineProperty(citations, '01', { configurable: true, value: active('non-index') });
+  Object.defineProperty(citations, '4294967295', { configurable: true, value: active('too-large') });
+  assert.deepEqual(triageMessage({ message: '普通问题', confidence: 0.9, citations, now }).citations, []);
 });

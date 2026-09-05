@@ -1,5 +1,7 @@
 'use strict';
 
+const intrinsicDateGetTime = Date.prototype.getTime;
+
 function dataField(value, key) {
   try {
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -13,9 +15,10 @@ function dataField(value, key) {
 
 function dateValue(value) {
   try {
-    if (value instanceof Date) return Date.prototype.getTime.call(value);
+    const intrinsic = intrinsicDateGetTime.call(value);
+    if (typeof intrinsic === 'number') return intrinsic;
   } catch {
-    return NaN;
+    // Only primitive date values may fall through to parsing below.
   }
   if (typeof value !== 'string' && typeof value !== 'number') return NaN;
   return new Date(value).getTime();
@@ -64,12 +67,21 @@ function validCitationIds(citations, now) {
   } catch {
     return [];
   }
-  const lengthField = dataField(citations, 'length');
-  if (!lengthField.ok || !Number.isSafeInteger(lengthField.value) || lengthField.value < 0) return [];
+  let keys;
+  try {
+    keys = Reflect.ownKeys(citations);
+  } catch {
+    return [];
+  }
+  const indexes = keys.filter((key) => {
+    if (typeof key !== 'string' || !/^(0|[1-9]\d*)$/.test(key)) return false;
+    const index = Number(key);
+    return index <= 0xffffffff - 2 && String(index) === key;
+  }).sort((a, b) => Number(a) - Number(b));
   const seen = new Set();
   const ids = [];
-  for (let index = 0; index < lengthField.value; index += 1) {
-    const item = dataField(citations, String(index));
+  for (const index of indexes) {
+    const item = dataField(citations, index);
     if (!item.ok) continue;
     const id = activeKnowledgeId(item.value, now);
     if (id !== null && !seen.has(id)) {
