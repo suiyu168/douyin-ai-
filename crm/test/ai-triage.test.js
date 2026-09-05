@@ -132,3 +132,17 @@ test('safely ignores revoked proxies and throwing descriptor traps', () => {
   sourceRevoked.revoke();
   assert.deepEqual(triageMessage(sourceRevoked.proxy), { mode: 'human_required', reasons: ['INVALID_MESSAGE'], citations: [] });
 });
+
+test('does not trust an overridden getTime on an invalid Date used as now', () => {
+  const invalidNow = new Date('invalid');
+  invalidNow.getTime = () => new Date('2026-09-05T00:00:00Z').getTime();
+  assert.equal(isKnowledgeActive(active(), invalidNow), false);
+});
+
+test('does not trust an overridden getTime on an invalid effective date', () => {
+  const invalidEffective = new Date('invalid');
+  invalidEffective.getTime = () => new Date('2026-08-01T00:00:00Z').getTime();
+  const citation = { ...active(), effectiveAt: invalidEffective };
+  assert.equal(isKnowledgeActive(citation, now), false);
+  assert.deepEqual(triageMessage({ message: '普通问题', confidence: 0.9, citations: [citation], now }), { mode: 'suggestion', reasons: ['NO_VALID_CITATION'], citations: [] });
+});

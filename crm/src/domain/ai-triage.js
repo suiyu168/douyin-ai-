@@ -13,7 +13,7 @@ function dataField(value, key) {
 
 function dateValue(value) {
   try {
-    if (value instanceof Date) return value.getTime();
+    if (value instanceof Date) return Date.prototype.getTime.call(value);
   } catch {
     return NaN;
   }
