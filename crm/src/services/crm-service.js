@@ -204,6 +204,10 @@ function createCrmService({ store, clock = () => new Date() }) {
   function dashboard(input) {
     const { actor, scope } = readContext(input);
     const customers = visibleCustomers(actor, scope);
+    const conversationCustomerIds = new Set(customers.filter(customer => can(actor, 'conversation.read', customer)).map(customer => customer.id));
+    const pendingConversationIds = db.prepare('SELECT id, customer_id, payload FROM conversations ORDER BY id').all()
+      .filter(row => conversationCustomerIds.has(row.customer_id) && JSON.parse(row.payload).mode === 'human_required')
+      .map(row => row.id);
     const orderCustomerIds = new Set(customers.filter(customer => can(actor, 'order.read', customer)).map(customer => customer.id));
     const metrics = Object.fromEntries(['agreed', 'receivable', 'received', 'outstanding', 'refunded', 'reversed', 'netReceived'].map(key => [key, { amountCents: 0, orderIds: [] }]));
     const totals = Object.fromEntries(Object.keys(metrics).map(key => [key, 0n]));
@@ -221,7 +225,7 @@ function createCrmService({ store, clock = () => new Date() }) {
       if (totals[key] > BigInt(Number.MAX_SAFE_INTEGER) || totals[key] < -BigInt(Number.MAX_SAFE_INTEGER)) fail('INVALID_TOTAL');
       metrics[key].amountCents = Number(totals[key]);
     }
-    return { customerCount: customers.length, metrics };
+    return { customerCount: customers.length, metrics, pendingHumanCount: pendingConversationIds.length, pendingConversationIds };
   }
   return { importCustomer, listCustomers, createOrder, appendPayment, triageConversation, dashboard };
 }

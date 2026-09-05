@@ -14,7 +14,8 @@ const { createCrmService } = require('../src/services/crm-service');
 // Writes: { actor, requestId, customer|order|entry|conversation, source?, customerId?, orderId? }.
 // Reads: { actor, scope?: { campusId?, teamId?, ownerId? } }.
 // Import -> { decision, reasons, customer, sourceId }; order/payment -> { order, summary };
-// triage -> { conversation }; list -> { customers }; dashboard -> { customerCount, metrics }.
+// triage -> { conversation }; list -> { customers };
+// dashboard -> { customerCount, metrics, pendingHumanCount, pendingConversationIds }.
 // Review is a CUSTOMER_REVIEW_REQUIRED error with safe decision/reasons, no mutation.
 // Actor objects are trusted server-resolved identities, never browser-supplied roles.
 const admin = { id: 'admin-1', roles: ['admin'], campusIds: [] };
@@ -397,6 +398,32 @@ test('dashboard filters actual permissions rejects explicit scope escapes and st
   assert.throws(() => service.dashboard({ actor: null }), { code: 'FORBIDDEN' });
 });
 
+test('dashboard counts only persisted human-required conversations visible to the actor', (t) => {
+  const { service } = fixture(t);
+  assert.equal(service.dashboard({ actor: admin }).pendingHumanCount, 0);
+  assert.deepEqual(service.dashboard({ actor: admin }).pendingConversationIds, []);
+  const ownId = imported(service, 'own-c', { notes: 'human_required，待人工999' }).customer.id;
+  const otherId = imported(service, 'other-c', { phone: '13900000002', wechat: 'other', campusId: 'campus-b', ownerId: 'other' }).customer.id;
+  const first = triaged(service, ownId, 'risk-one', { message: '我要退款' }).conversation.id;
+  const second = triaged(service, ownId, 'risk-two', { message: '合同问题' }).conversation.id;
+  const other = triaged(service, otherId, 'risk-other', { message: '我要投诉' }).conversation.id;
+  triaged(service, ownId, 'suggestion', { mode: 'human_required' });
+  triaged(service, ownId, 'auto', { citations: [activeCitation()] });
+  triaged(service, ownId, 'risk-one', { message: '重复请求不能多算' });
+  const all = service.dashboard({ actor: admin });
+  assert.equal(all.pendingHumanCount, 3);
+  assert.deepEqual(all.pendingConversationIds, [first, second, other].sort());
+  for (const input of [{ actor: serviceActor }, { actor: admin, scope: { campusId: 'campus-a' } }]) {
+    const scoped = service.dashboard(input);
+    assert.equal(scoped.pendingHumanCount, 2);
+    assert.deepEqual(scoped.pendingConversationIds, [first, second].sort());
+  }
+  const finance = service.dashboard({ actor: financeActor });
+  assert.equal(finance.pendingHumanCount, 0);
+  assert.deepEqual(finance.pendingConversationIds, []);
+  assert.throws(() => service.dashboard({ actor: serviceActor, scope: { campusId: 'campus-b' } }), { code: 'FORBIDDEN' });
+});
+
 test('dashboard refuses aggregate overflow instead of silently rounding cents', (t) => {
   const { service } = fixture(t);
   const customerId = imported(service).customer.id;
@@ -415,8 +442,10 @@ test('reopened stores share request idempotency results for the whole workflow',
   const customer = imported(service);
   const order = quoted(service, customer.customer.id);
   const payment = paid(service, order.order.id);
-  const conversation = triaged(service, customer.customer.id);
+  const conversation = triaged(service, customer.customer.id, 'triage-1', { message: '合同问题' });
   const report = service.dashboard({ actor: admin });
+  assert.equal(report.pendingHumanCount, 1);
+  assert.deepEqual(report.pendingConversationIds, [conversation.conversation.id]);
   const before = counts(stores[0]);
   stores[0].close();
   stores.push(createStore(path)); stores.push(createStore(path));
