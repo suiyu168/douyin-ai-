@@ -131,3 +131,49 @@ test('permits safe adjustment clamping despite negative intermediate values', ()
   order = appendLedgerEntry(order, { type: 'adjustment', direction: 'increase', idempotencyKey: 'up', amountCents: Number.MAX_SAFE_INTEGER, status: 'confirmed', occurredAt: '2026-08-01' });
   assert.equal(summarizeOrder(order).receivable, 0);
 });
+
+test('reversal aggregate overflow is rejected independently', () => {
+  let order = quoteOrder({ listPriceCents: 0 });
+  order = appendLedgerEntry(order, { type: 'reversal', idempotencyKey: 'r1', amountCents: Number.MAX_SAFE_INTEGER, status: 'confirmed', occurredAt: '2026-08-01' });
+  order = appendLedgerEntry(order, { type: 'reversal', idempotencyKey: 'r2', amountCents: 1, status: 'confirmed', occurredAt: '2026-08-01' });
+  assert.throws(() => summarizeOrder(order), { code: 'INVALID_ORDER' });
+});
+
+test('two confirmed decreases clamp below-safe receivable to zero', () => {
+  let order = quoteOrder({ listPriceCents: 0 });
+  order = appendLedgerEntry(order, { type: 'adjustment', direction: 'decrease', idempotencyKey: 'd1', amountCents: Number.MAX_SAFE_INTEGER, status: 'confirmed', occurredAt: '2026-08-01' });
+  order = appendLedgerEntry(order, { type: 'adjustment', direction: 'decrease', idempotencyKey: 'd2', amountCents: 1, status: 'confirmed', occurredAt: '2026-08-01' });
+  const summary = summarizeOrder(order);
+  assert.equal(summary.receivable, 0); assert.equal(summary.outstanding, 0);
+});
+
+test('refund plus reversal causes net received underflow', () => {
+  let order = quoteOrder({ listPriceCents: 0 });
+  order = appendLedgerEntry(order, { type: 'refund', idempotencyKey: 'f', amountCents: Number.MAX_SAFE_INTEGER, status: 'confirmed', occurredAt: '2026-08-01' });
+  order = appendLedgerEntry(order, { type: 'reversal', idempotencyKey: 'v', amountCents: 1, status: 'confirmed', occurredAt: '2026-08-01' });
+  assert.throws(() => summarizeOrder(order), { code: 'INVALID_ORDER' });
+});
+
+test('maximum receivable and refund causes outstanding overflow', () => {
+  let order = quoteOrder({ listPriceCents: Number.MAX_SAFE_INTEGER });
+  order = appendLedgerEntry(order, { type: 'refund', idempotencyKey: 'f', amountCents: Number.MAX_SAFE_INTEGER, status: 'confirmed', occurredAt: '2026-08-01' });
+  assert.throws(() => summarizeOrder(order), { code: 'INVALID_ORDER' });
+});
+
+test('each invalid discount amount is rejected as invalid money', () => {
+  for (const discountCents of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN]) {
+    assert.throws(() => quoteOrder({ listPriceCents: 100, discountCents, discountApproved: true }), { code: 'INVALID_MONEY' });
+  }
+});
+
+test('unknown type with all other entry fields valid is rejected', () => {
+  assert.throws(() => appendLedgerEntry(quoteOrder({ listPriceCents: 100 }), { type: 'chargeback', idempotencyKey: 'x', amountCents: 1, status: 'confirmed', occurredAt: '2026-08-01' }), { code: 'INVALID_LEDGER_ENTRY' });
+});
+
+test('blank key with all other entry fields valid is rejected', () => {
+  assert.throws(() => appendLedgerEntry(quoteOrder({ listPriceCents: 100 }), { type: 'payment', idempotencyKey: '   ', amountCents: 1, status: 'confirmed', occurredAt: '2026-08-01' }), { code: 'INVALID_LEDGER_ENTRY' });
+});
+
+test('invalid occurredAt with all other entry fields valid is rejected', () => {
+  assert.throws(() => appendLedgerEntry(quoteOrder({ listPriceCents: 100 }), { type: 'payment', idempotencyKey: 'x', amountCents: 1, status: 'confirmed', occurredAt: 'not-a-date' }), { code: 'INVALID_LEDGER_ENTRY' });
+});
