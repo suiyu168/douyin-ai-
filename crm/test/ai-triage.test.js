@@ -84,3 +84,51 @@ test('handles invalid confidence safely and does not mutate inputs', () => {
   assert.equal(JSON.stringify(input), before);
   assert.equal(citation.id, 'v-current');
 });
+
+test('safely rejects throwing source and citation accessors', () => {
+  const source = {};
+  for (const key of ['message', 'citations', 'now', 'confidence']) Object.defineProperty(source, key, { get() { throw new Error(`read ${key}`); } });
+  assert.deepEqual(triageMessage(source), { mode: 'human_required', reasons: ['INVALID_MESSAGE'], citations: [] });
+
+  const citation = active();
+  for (const key of ['id', 'effectiveAt']) Object.defineProperty(citation, key, { get() { throw new Error(`read ${key}`); } });
+  assert.deepEqual(triageMessage({ message: '普通问题', confidence: 0.9, citations: [citation], now }), { mode: 'suggestion', reasons: ['NO_VALID_CITATION'], citations: [] });
+});
+
+test('snapshots a citation id once after validation', () => {
+  let reads = 0;
+  const citation = active();
+  const proxied = new Proxy(citation, { getOwnPropertyDescriptor(target, key) {
+    const descriptor = Reflect.getOwnPropertyDescriptor(target, key);
+    if (key === 'id' && reads++ === 0) target.id = 'tampered';
+    return descriptor;
+  } });
+  assert.deepEqual(triageMessage({ message: '普通问题', confidence: 0.9, citations: [proxied], now }), { mode: 'auto_reply', reasons: [], citations: ['v-current'] });
+  assert.equal(reads, 1);
+});
+
+test('scans only own numeric citation slots and ignores custom iteration', () => {
+  const prototype = Array.prototype;
+  const inherited = active('inherited-slot');
+  Object.defineProperty(prototype, '0', { configurable: true, writable: true, value: inherited });
+  try {
+    const citations = [];
+    citations.length = 2;
+    citations[1] = active('own-slot');
+    citations[Symbol.iterator] = function* () { yield active('iterator-slot'); };
+    assert.deepEqual(triageMessage({ message: '普通问题', confidence: 0.9, citations, now }).citations, ['own-slot']);
+  } finally {
+    delete prototype[0];
+  }
+});
+
+test('safely ignores revoked proxies and throwing descriptor traps', () => {
+  const revoked = Proxy.revocable(active(), {});
+  revoked.revoke();
+  const throwingCitation = new Proxy(active('throwing'), { getOwnPropertyDescriptor() { throw new Error('descriptor'); } });
+  const citations = [revoked.proxy, throwingCitation, active('valid')];
+  assert.deepEqual(triageMessage({ message: '普通问题', confidence: 0.9, citations, now }).citations, ['valid']);
+  const sourceRevoked = Proxy.revocable({ message: '普通问题' }, {});
+  sourceRevoked.revoke();
+  assert.deepEqual(triageMessage(sourceRevoked.proxy), { mode: 'human_required', reasons: ['INVALID_MESSAGE'], citations: [] });
+});
