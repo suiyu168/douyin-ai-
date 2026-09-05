@@ -175,3 +175,19 @@ test('does not scan a maximum-length empty array or non-index keys', () => {
   Object.defineProperty(citations, '4294967295', { configurable: true, value: active('too-large') });
   assert.deepEqual(triageMessage({ message: '普通问题', confidence: 0.9, citations, now }).citations, []);
 });
+
+test('accepts an active citation in the maximum valid array index', () => {
+  const citations = [];
+  Object.defineProperty(citations, '4294967294', { value: active('last-index') });
+  assert.deepEqual(triageMessage({ message: '普通问题', confidence: 0.9, citations, now }), {
+    mode: 'auto_reply', reasons: [], citations: ['last-index'],
+  });
+});
+
+test('ignores an active citation in the first numeric property beyond array indexes', () => {
+  const citations = [];
+  Object.defineProperty(citations, '4294967295', { value: active('non-index') });
+  assert.deepEqual(triageMessage({ message: '普通问题', confidence: 0.9, citations, now }), {
+    mode: 'suggestion', reasons: ['NO_VALID_CITATION'], citations: [],
+  });
+});

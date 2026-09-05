@@ -76,7 +76,7 @@ function validCitationIds(citations, now) {
   const indexes = keys.filter((key) => {
     if (typeof key !== 'string' || !/^(0|[1-9]\d*)$/.test(key)) return false;
     const index = Number(key);
-    return index <= 0xffffffff - 2 && String(index) === key;
+    return index >= 0 && index < 0xffffffff && String(index) === key;
   }).sort((a, b) => Number(a) - Number(b));
   const seen = new Set();
   const ids = [];
