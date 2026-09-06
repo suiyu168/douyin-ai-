@@ -12,7 +12,7 @@ function money(cents) { return numberFormat.format((Number.isSafeInteger(cents) 
 function text(value) { return value == null || value === '' ? '—' : String(value); }
 function renderCustomers(customers) {
   customerRows.replaceChildren();
-  if (!customers.length) { const row = document.createElement('tr'); const cell = document.createElement('td'); cell.colSpan = 5; cell.textContent = '暂无可见客户，请在客户模块导入虚构演示数据后查看。'; row.append(cell); customerRows.append(row); return; }
+  if (!customers.length) { const row = document.createElement('tr'); const cell = document.createElement('td'); cell.colSpan = 5; cell.textContent = '暂无可见客户。演示数据将在首次启动时自动准备。'; row.append(cell); customerRows.append(row); return; }
   for (const customer of customers) { const row = document.createElement('tr'); for (const value of [customer.name, customer.stage, customer.ownerId, customer.nextFollowUpAt, customer.phone]) { const cell = document.createElement('td'); cell.textContent = text(value); row.append(cell); } customerRows.append(row); }
 }
 function resetMetrics() { for (const id of Object.values(metricIds)) document.querySelector(`#${id}`).textContent = '—'; }
@@ -29,3 +29,15 @@ async function load() {
   } catch (error) { if (generation !== loadGeneration) return; resetMetrics(); customerRows.innerHTML = '<tr><td colspan="5">加载失败，请重新加载。</td></tr>'; status.className = 'status error'; status.textContent = `加载失败：${error.message}。请重新加载。`; }
 }
 document.querySelector('#retry').addEventListener('click', load); identity.addEventListener('change', load); load();
+for (const item of document.querySelectorAll('.nav-item[data-target]')) {
+  item.addEventListener('click', () => {
+    const target = document.querySelector(`#${item.dataset.target}`);
+    if (!target) return;
+    for (const navItem of document.querySelectorAll('.nav-item[data-target]')) {
+      navItem.classList.toggle('active', navItem === item);
+      if (navItem === item) navItem.setAttribute('aria-current', 'page'); else navItem.removeAttribute('aria-current');
+    }
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    target.focus({ preventScroll: true });
+  });
+}

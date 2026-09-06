@@ -268,3 +268,21 @@ test('workbench source declares honest, accessible same-origin states without bu
   assert.doesNotMatch(html, /成交额[^<]*[￥¥]\s*\d/);
   assert.doesNotMatch(html, /客户总数[^<]*\d/);
 });
+
+test('workbench navigation links implemented sections and exposes disabled construction states', () => {
+  const html = readFileSync(join(publicDir, 'index.html'), 'utf8');
+  const app = readFileSync(join(publicDir, 'app.js'), 'utf8');
+  const css = readFileSync(join(publicDir, 'styles.css'), 'utf8');
+  for (const target of ['workspace-overview', 'customers-section', 'conversations-section', 'finance-overview']) {
+    assert.match(html, new RegExp(`data-target="${target}"`));
+    assert.match(html, new RegExp(`id="${target}"`));
+  }
+  for (const label of ['报名学员', '组织权限', '知识库']) {
+    assert.match(html, new RegExp(`<button[^>]+disabled[^>]*>[^<]*${label}[\\s\\S]*?模块建设中[\\s\\S]*?<\\/button>`));
+  }
+  assert.match(app, /querySelectorAll\('\.nav-item\[data-target\]'\)/);
+  assert.match(app, /scrollIntoView/);
+  assert.match(app, /aria-current/);
+  assert.doesNotMatch(css, /\.building\s+span\s*\{[^}]*display\s*:\s*none/);
+  assert.doesNotMatch(html, /暂无可见客户，请在客户模块导入/);
+});

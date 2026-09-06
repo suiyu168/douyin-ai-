@@ -12,35 +12,35 @@
     <aside class="sidebar" aria-label="主导航">
       <a class="brand" href="/" aria-label="成蹊云 CRM 首页"><span class="brand-mark">成</span><span>成蹊云</span><small>CRM</small></a>
       <nav>
-        <button class="nav-item active" type="button">工作台</button>
-        <button class="nav-item" type="button">客户</button>
-        <button class="nav-item" type="button">AI 会话</button>
-        <button class="nav-item building" type="button">报名学员 <span>模块建设中</span></button>
-        <button class="nav-item building" type="button">订单收款 <span>模块建设中</span></button>
-        <button class="nav-item building" type="button">报表 <span>模块建设中</span></button>
-        <button class="nav-item building" type="button">组织权限 <span>模块建设中</span></button>
-        <button class="nav-item building" type="button">知识库 <span>模块建设中</span></button>
+        <button class="nav-item active" type="button" data-target="workspace-overview" aria-current="page">工作台</button>
+        <button class="nav-item" type="button" data-target="customers-section">客户</button>
+        <button class="nav-item" type="button" data-target="conversations-section">AI 会话</button>
+        <button class="nav-item building" type="button" disabled aria-disabled="true">报名学员 <span>模块建设中</span></button>
+        <button class="nav-item" type="button" data-target="finance-overview">订单收款</button>
+        <button class="nav-item" type="button" data-target="finance-overview">报表</button>
+        <button class="nav-item building" type="button" disabled aria-disabled="true">组织权限 <span>模块建设中</span></button>
+        <button class="nav-item building" type="button" disabled aria-disabled="true">知识库 <span>模块建设中</span></button>
       </nav>
       <p class="demo-note">仅限本地虚构演示身份，不代表生产认证。</p>
     </aside>
     <main>
-      <header class="topbar">
+      <header id="workspace-overview" class="topbar" tabindex="-1">
         <div><p class="eyebrow">运营工作台</p><h1>今日业务概览</h1></div>
         <label class="identity">演示身份 <select id="demo-user" aria-label="选择演示身份"><option value="admin-1">管理员</option><option value="service-1">客服</option><option value="finance-1">财务</option></select></label>
       </header>
       <p id="status" class="status" role="status" aria-live="polite">正在加载工作台数据…</p>
-      <section class="metrics" aria-label="核心指标">
+      <section id="finance-overview" class="metrics" aria-label="核心指标" tabindex="-1">
         <article class="metric"><span>客户总数</span><strong id="customer-count">—</strong></article>
         <article class="metric yellow"><span>待人工</span><strong id="pending-count">—</strong></article>
         <article class="metric blue"><span>成交额</span><strong id="agreed">—</strong></article>
         <article class="metric green"><span>实收</span><strong id="received">—</strong></article>
         <article class="metric"><span>待收</span><strong id="outstanding">—</strong></article>
       </section>
-      <section class="panel" aria-labelledby="customers-heading">
+      <section id="customers-section" class="panel" aria-labelledby="customers-heading" tabindex="-1">
         <div class="panel-head"><div><p class="eyebrow">客户跟进</p><h2 id="customers-heading">可见客户</h2></div><button id="retry" class="retry" type="button">重新加载</button></div>
         <div class="table-wrap"><table><thead><tr><th scope="col">客户</th><th scope="col">阶段</th><th scope="col">负责人</th><th scope="col">下次跟进</th><th scope="col">脱敏手机号</th></tr></thead><tbody id="customers"><tr><td colspan="5">正在加载客户列表…</td></tr></tbody></table></div>
       </section>
-      <section class="panel legend" aria-labelledby="legend-heading"><div><p class="eyebrow">会话状态</p><h2 id="legend-heading">AI 分流说明</h2></div><ul><li><span class="badge auto">AI 已回复</span><code>auto_reply</code></li><li><span class="badge suggestion">待人工确认</span><code>suggestion</code></li><li><span class="badge human">人工接管</span><code>human_required</code></li></ul></section>
+      <section id="conversations-section" class="panel legend" aria-labelledby="legend-heading" tabindex="-1"><div><p class="eyebrow">会话状态</p><h2 id="legend-heading">AI 分流说明</h2></div><ul><li><span class="badge auto">AI 已回复</span><code>auto_reply</code></li><li><span class="badge suggestion">待人工确认</span><code>suggestion</code></li><li><span class="badge human">人工接管</span><code>human_required</code></li></ul></section>
     </main>
   </div>
   <script src="/app.js" defer></script>
