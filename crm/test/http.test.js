@@ -260,6 +260,9 @@ test('workbench source declares honest, accessible same-origin states without bu
   assert.match(app, /['"]\/api\/dashboard['"]/);
   assert.match(app, /['"]\/api\/customers['"]/);
   assert.match(app, /Intl\.NumberFormat\('zh-CN', \{ style: 'currency', currency: 'CNY' \}\)/);
+  assert.match(app, /function displayPhone\(/);
+  assert.match(app, /function displayDate\(/);
+  assert.match(app, /customer\.nextFollowUpAt\).*displayPhone\(customer\.phone\)/);
   assert.match(app, /重新加载/);
   assert.match(app, /let loadGeneration = 0/);
   assert.match(app, /const generation = \+\+loadGeneration/);
@@ -284,5 +287,7 @@ test('workbench navigation links implemented sections and exposes disabled const
   assert.match(app, /scrollIntoView/);
   assert.match(app, /aria-current/);
   assert.doesNotMatch(css, /\.building\s+span\s*\{[^}]*display\s*:\s*none/);
+  assert.match(css, /@media \(max-width:940px\)[\s\S]*?\.sidebar \{[^}]*width:100vw;[^}]*max-width:100%;[^}]*min-width:0;/);
+  assert.match(css, /@media \(max-width:940px\)[\s\S]*?main \{[^}]*min-width:0;/);
   assert.doesNotMatch(html, /暂无可见客户，请在客户模块导入/);
 });
