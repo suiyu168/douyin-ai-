@@ -11,6 +11,7 @@ const DEMO_ACTORS = Object.freeze({
 });
 
 function makeError(code) { const error = new Error(code); error.code = code; return error; }
+function methodNotAllowed(allow) { const error = makeError('METHOD_NOT_ALLOWED'); error.allow = allow; return error; }
 function own(object, key) { return Object.prototype.hasOwnProperty.call(object, key); }
 function object(value) { return value !== null && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype; }
 function pick(value, fields) {
@@ -56,7 +57,8 @@ function sendJson(response, status, body, extraHeaders = {}) {
 function sendError(response, error) {
   const code = typeof error?.code === 'string' ? error.code : 'INTERNAL_ERROR';
   const status = statusFor(code);
-  sendJson(response, status, { error: { code: status === 500 ? 'INTERNAL_ERROR' : code, message: messageFor(code) } }, status === 405 ? { allow: 'GET, POST, HEAD' } : {});
+  const headers = status === 405 && typeof error.allow === 'string' ? { allow: error.allow } : {};
+  sendJson(response, status, { error: { code: status === 500 ? 'INTERNAL_ERROR' : code, message: messageFor(code) } }, headers);
 }
 function readJson(request) {
   const type = request.headers['content-type'];
@@ -95,46 +97,58 @@ function readJson(request) {
     });
   });
 }
-function scopeFor(url) {
+function parseTarget(value) {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.includes('#')) return { pathname: '', query: '', hasQuery: false };
+  const queryIndex = value.indexOf('?');
+  return queryIndex < 0
+    ? { pathname: value, query: '', hasQuery: false }
+    : { pathname: value.slice(0, queryIndex), query: value.slice(queryIndex + 1), hasQuery: true };
+}
+function scopeFor(target) {
   const scope = {};
-  for (const [key, value] of url.searchParams) {
+  const query = new URL(`http://same-origin.invalid/?${target.query}`).searchParams;
+  for (const [key, value] of query) {
     if (!['campusId', 'teamId', 'ownerId'].includes(key) || own(scope, key)) throw makeError('INVALID_SCOPE');
     scope[key] = value;
   }
   return scope;
 }
-function noQuery(url) { if (url.search) throw makeError('INVALID_SCOPE'); }
+function noQuery(target) { if (target.hasQuery) throw makeError('INVALID_SCOPE'); }
 
 function createApiRouter({ service }) {
   return async function route(request, response) {
-    const url = new URL(request.url, 'http://same-origin.invalid');
-    if (!url.pathname.startsWith('/api/')) return false;
+    const target = parseTarget(request.url);
+    if (!target.pathname.startsWith('/api/')) return false;
     try {
-      if (url.pathname === '/api/health') {
-        if (request.method !== 'GET') throw makeError('METHOD_NOT_ALLOWED');
-        noQuery(url);
+      if (target.pathname === '/api/health') {
+        if (request.method !== 'GET') throw methodNotAllowed('GET');
+        noQuery(target);
         sendJson(response, 200, { ok: true });
         return true;
       }
       const actor = actorFor(request.headers);
-      if (url.pathname === '/api/dashboard' && request.method === 'GET') {
-        sendJson(response, 200, service.dashboard({ actor, scope: scopeFor(url) }));
-      } else if (url.pathname === '/api/customers' && request.method === 'GET') {
-        sendJson(response, 200, service.listCustomers({ actor, scope: scopeFor(url) }));
-      } else if (url.pathname === '/api/customers' && request.method === 'POST') {
-        noQuery(url); const body = await readJson(request);
+      if (target.pathname === '/api/dashboard' && request.method === 'GET') {
+        sendJson(response, 200, service.dashboard({ actor, scope: scopeFor(target) }));
+      } else if (target.pathname === '/api/customers' && request.method === 'GET') {
+        sendJson(response, 200, service.listCustomers({ actor, scope: scopeFor(target) }));
+      } else if (target.pathname === '/api/customers' && request.method === 'POST') {
+        noQuery(target); const body = await readJson(request);
         sendJson(response, 200, service.importCustomer({ actor, requestId: body.requestId, customer: pick(body.customer, ['name', 'phone', 'wechat', 'idNumber', 'idLast4', 'ownerId', 'campusId', 'teamId', 'assignedTeacherId', 'stage', 'nextFollowUpAt', 'notes']), source: pick(body.source, ['channel', 'batch']) }));
-      } else if (url.pathname === '/api/orders' && request.method === 'POST') {
-        noQuery(url); const body = await readJson(request);
+      } else if (target.pathname === '/api/orders' && request.method === 'POST') {
+        noQuery(target); const body = await readJson(request);
         sendJson(response, 200, service.createOrder({ actor, requestId: body.requestId, customerId: body.customerId, order: pick(body.order, ['listPriceCents', 'discountCents', 'discountApproved', 'dueAt', 'title']) }));
-      } else if (url.pathname === '/api/ledger' && request.method === 'POST') {
-        noQuery(url); const body = await readJson(request);
+      } else if (target.pathname === '/api/ledger' && request.method === 'POST') {
+        noQuery(target); const body = await readJson(request);
         sendJson(response, 200, service.appendPayment({ actor, requestId: body.requestId, orderId: body.orderId, entry: pick(body.entry, ['type', 'idempotencyKey', 'amountCents', 'status', 'direction', 'occurredAt']) }));
-      } else if (url.pathname === '/api/conversations/triage' && request.method === 'POST') {
-        noQuery(url); const body = await readJson(request);
+      } else if (target.pathname === '/api/conversations/triage' && request.method === 'POST') {
+        noQuery(target); const body = await readJson(request);
         sendJson(response, 200, service.triageConversation({ actor, requestId: body.requestId, customerId: body.customerId, conversation: pick(body.conversation, ['message', 'confidence', 'citations']) }));
-      } else if (['/api/dashboard', '/api/customers', '/api/orders', '/api/ledger', '/api/conversations/triage'].includes(url.pathname)) {
-        throw makeError('METHOD_NOT_ALLOWED');
+      } else if (target.pathname === '/api/dashboard') {
+        throw methodNotAllowed('GET');
+      } else if (target.pathname === '/api/customers') {
+        throw methodNotAllowed('GET, POST');
+      } else if (['/api/orders', '/api/ledger', '/api/conversations/triage'].includes(target.pathname)) {
+        throw methodNotAllowed('POST');
       } else {
         throw makeError('NOT_FOUND');
       }

@@ -18,8 +18,7 @@ function createServer({ service, publicDir = resolve(__dirname, '../../public') 
   return http.createServer(async (request, response) => {
     try {
       if (await routeApi(request, response)) return;
-      const url = new URL(request.url, 'http://same-origin.invalid');
-      const asset = !url.search && STATIC_FILES[url.pathname];
+      const asset = typeof request.url === 'string' && !request.url.includes('?') && STATIC_FILES[request.url];
       if (!asset || !['GET', 'HEAD'].includes(request.method)) { response.writeHead(404, { 'x-content-type-options': 'nosniff' }); response.end(); return; }
       const path = resolve(root, asset.file);
       if (!path.startsWith(`${root}\\`) && path !== root) { response.writeHead(404); response.end(); return; }

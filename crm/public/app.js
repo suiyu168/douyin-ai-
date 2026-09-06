@@ -5,6 +5,7 @@ const identity = document.querySelector('#demo-user');
 const status = document.querySelector('#status');
 const customerRows = document.querySelector('#customers');
 const metricIds = { customerCount: 'customer-count', pendingHumanCount: 'pending-count', agreed: 'agreed', received: 'received', outstanding: 'outstanding' };
+let loadGeneration = 0;
 
 function request(path) { return fetch(path, { headers: { 'x-demo-user': identity.value, accept: 'application/json' }, cache: 'no-store' }).then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error?.message || '请求失败'); return data; }); }
 function money(cents) { return numberFormat.format((Number.isSafeInteger(cents) ? cents : 0) / 100); }
@@ -16,13 +17,15 @@ function renderCustomers(customers) {
 }
 function resetMetrics() { for (const id of Object.values(metricIds)) document.querySelector(`#${id}`).textContent = '—'; }
 async function load() {
+  const generation = ++loadGeneration;
   status.className = 'status'; status.textContent = '正在加载同源业务数据…'; resetMetrics(); customerRows.innerHTML = '<tr><td colspan="5">正在加载客户列表…</td></tr>';
   try {
     const [dashboard, customers] = await Promise.all([request('/api/dashboard'), request('/api/customers')]);
+    if (generation !== loadGeneration) return;
     document.querySelector('#customer-count').textContent = text(dashboard.customerCount);
     document.querySelector('#pending-count').textContent = text(dashboard.pendingHumanCount);
     for (const key of ['agreed', 'received', 'outstanding']) document.querySelector(`#${metricIds[key]}`).textContent = money(dashboard.metrics?.[key]?.amountCents);
     renderCustomers(customers.customers || []); status.textContent = '数据已刷新。';
-  } catch (error) { resetMetrics(); customerRows.innerHTML = '<tr><td colspan="5">加载失败，请重新加载。</td></tr>'; status.className = 'status error'; status.textContent = `加载失败：${error.message}。请重新加载。`; }
+  } catch (error) { if (generation !== loadGeneration) return; resetMetrics(); customerRows.innerHTML = '<tr><td colspan="5">加载失败，请重新加载。</td></tr>'; status.className = 'status error'; status.textContent = `加载失败：${error.message}。请重新加载。`; }
 }
 document.querySelector('#retry').addEventListener('click', load); identity.addEventListener('change', load); load();

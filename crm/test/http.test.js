@@ -57,6 +57,19 @@ function rawRequest(url, options, chunks) {
   });
 }
 
+function rawTargetRequest(base, target, options = {}) {
+  return new Promise((resolve, reject) => {
+    const origin = new URL(base);
+    const request = http.request({ hostname: origin.hostname, port: origin.port, path: target, method: options.method || 'GET', headers: options.headers }, response => {
+      const parts = [];
+      response.on('data', part => parts.push(part));
+      response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body: Buffer.concat(parts).toString('utf8') }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
 test('health endpoint is public and returns a JSON ok envelope', async () => {
   await withServer(async base => {
     const { response, body } = await json(`${base}/api/health`);
@@ -176,6 +189,38 @@ test('static workbench uses explicit allowlisted paths, types, CSP, and no body 
   });
 });
 
+test('static files require an exact raw request target and reject normalized traversal or empty queries', async () => {
+  await withServer(async base => {
+    for (const target of ['/%2e%2e/styles.css', '/x/%2e%2e/styles.css', '/styles.css?', '/?']) {
+      assert.equal((await rawTargetRequest(base, target)).status, 404, target);
+    }
+    for (const target of ['/', '/index.html', '/styles.css', '/app.js']) assert.equal((await rawTargetRequest(base, target)).status, 200, target);
+  });
+});
+
+test('API routing matches only the exact raw pathname while retaining allowed query scopes', async () => {
+  await withServer(async base => {
+    const headers = { 'x-demo-user': 'admin-1' };
+    assert.equal((await rawTargetRequest(base, '/api/x/%2e%2e/dashboard', { headers })).status, 404);
+    const { response } = await json(`${base}/api/customers?campusId=campus-a`, { headers });
+    assert.equal(response.status, 200);
+  });
+});
+
+test('405 Allow advertises only the methods implemented by each API route', async () => {
+  await withServer(async base => {
+    const headers = { 'x-demo-user': 'admin-1' };
+    for (const [path, method, allow] of [
+      ['/api/health', 'POST', 'GET'], ['/api/dashboard', 'POST', 'GET'], ['/api/customers', 'PUT', 'GET, POST'],
+      ['/api/orders', 'GET', 'POST'], ['/api/ledger', 'GET', 'POST'], ['/api/conversations/triage', 'GET', 'POST']
+    ]) {
+      const { response } = await json(`${base}${path}`, { method, headers });
+      assert.equal(response.status, 405);
+      assert.equal(response.headers.get('allow'), allow);
+    }
+  });
+});
+
 test('a missing allowlisted public file fails closed with 404', async () => {
   const emptyPublicDir = mkdtempSync(join(tmpdir(), 'chengqiyun-empty-public-'));
   try {
@@ -198,6 +243,9 @@ test('workbench source declares honest, accessible same-origin states without bu
   assert.match(app, /['"]\/api\/customers['"]/);
   assert.match(app, /Intl\.NumberFormat\('zh-CN', \{ style: 'currency', currency: 'CNY' \}\)/);
   assert.match(app, /重新加载/);
+  assert.match(app, /let loadGeneration = 0/);
+  assert.match(app, /const generation = \+\+loadGeneration/);
+  assert.match(app, /if \(generation !== loadGeneration\) return;/);
   assert.doesNotMatch(`${html}\n${app}\n${css}`, /https?:\/\//);
   assert.doesNotMatch(html, /成交额[^<]*[￥¥]\s*\d/);
   assert.doesNotMatch(html, /客户总数[^<]*\d/);
