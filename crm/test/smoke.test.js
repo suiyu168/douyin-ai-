@@ -71,14 +71,28 @@ function stopped(process, signal = 'SIGTERM') {
   });
 }
 
+function hasTerminated(child) {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
 function naturalExit(result) {
   if (!result.missing && result.code === 0 && result.signal === null) return { code: result.code, signal: result.signal };
   throw new Error(`CRM did not exit cleanly: ${JSON.stringify(result)}`);
 }
 
 async function forceStop(processInfo) {
-  if (processInfo.child.exitCode !== null) return;
-  try { await stopped(processInfo, 'SIGKILL'); } catch { /* Emergency cleanup must not hide the original graceful-stop failure. */ }
+  const { child } = processInfo;
+  if (hasTerminated(child)) return { code: child.exitCode, signal: child.signalCode };
+  let result;
+  try {
+    result = await stopped(processInfo, 'SIGKILL');
+  } catch (error) {
+    throw new Error('Emergency child recovery failed', { cause: error });
+  }
+  if (result.missing || !hasTerminated(child)) {
+    throw new Error('Emergency child recovery could not confirm termination', { cause: new Error(JSON.stringify(result)) });
+  }
+  return { code: child.exitCode, signal: child.signalCode };
 }
 
 function waitForExit(child) {
@@ -120,12 +134,18 @@ async function stopProcess(processInfo) {
 }
 
 async function cleanupProcess(processInfo) {
-  if (processInfo.child.exitCode !== null) return;
+  if (hasTerminated(processInfo.child)) return { code: processInfo.child.exitCode, signal: processInfo.child.signalCode };
   try {
-    return await stopProcess(processInfo);
-  } catch (error) {
-    await forceStop(processInfo);
-    throw error;
+    const result = await stopProcess(processInfo);
+    if (!hasTerminated(processInfo.child)) throw new Error('Graceful shutdown did not reach a child terminal state');
+    return result;
+  } catch (gracefulError) {
+    try {
+      await forceStop(processInfo);
+    } catch (emergencyError) {
+      throw new AggregateError([gracefulError, emergencyError], 'Graceful shutdown failed and emergency child recovery could not be confirmed');
+    }
+    throw gracefulError;
   }
 }
 
@@ -133,8 +153,11 @@ test('entrypoint becomes healthy only after fictional seed and reopens without d
   const dataDir = mkdtempSync(join(tmpdir(), 'chengqiyun-smoke-'));
   const processes = [];
   t.after(async () => {
-    await Promise.all(processes.map(process => process.child.exitCode === null ? cleanupProcess(process) : undefined));
-    rmSync(dataDir, { recursive: true, force: true });
+    try {
+      await Promise.all(processes.map(process => !hasTerminated(process.child) ? cleanupProcess(process) : undefined));
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 
   const firstPort = await freePort();
@@ -175,14 +198,35 @@ test('cleanup accepts only a natural graceful exit and rethrows after emergency 
   const dataDir = mkdtempSync(join(tmpdir(), 'chengqiyun-cleanup-'));
   const port = await freePort();
   const crm = start({ port, dataDir, ipc: process.platform === 'win32' });
-  const stubborn = { child: spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']), output: () => '' };
+  const stubborn = {
+    child: spawn(process.execPath, ['-e', process.platform === 'win32'
+      ? "process.on('message', () => {}); setInterval(() => {}, 1000)"
+      : "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+    { stdio: process.platform === 'win32' ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'] }),
+    output: () => ''
+  };
   t.after(async () => {
-    await Promise.all([crm, stubborn].map(processInfo => processInfo.child.exitCode === null ? forceStop(processInfo) : undefined));
-    rmSync(dataDir, { recursive: true, force: true });
+    try {
+      await Promise.all([crm, stubborn].map(processInfo => !hasTerminated(processInfo.child) ? forceStop(processInfo) : undefined));
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
   await waitForHealth(crm, port);
   assert.deepEqual(await cleanupProcess(crm), { code: 0, signal: null });
-  await assert.rejects(cleanupProcess(stubborn), /did not exit cleanly|IPC shutdown/);
+  await assert.rejects(cleanupProcess(stubborn), /child did not stop|IPC shutdown/);
+  assert.notEqual(stubborn.child.signalCode, null);
+  const unconfirmable = {
+    child: { exitCode: null, signalCode: null, kill: () => false, once: () => {} },
+    output: () => 'unconfirmable controlled child'
+  };
+  await assert.rejects(cleanupProcess(unconfirmable), error => {
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.errors.length, 2);
+    assert.match(error.errors[0].message, /did not exit cleanly|IPC shutdown/);
+    assert.match(error.errors[1].message, /Emergency child recovery/);
+    return true;
+  });
 });
 
 test('composition helper stops HTTP before closing the seeded SQLite store', { timeout: 20_000 }, async t => {
