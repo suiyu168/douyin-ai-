@@ -83,10 +83,18 @@ async function runMain() {
     const stop = () => {
       if (shuttingDown) return;
       shuttingDown = true;
-      app.shutdown().then(() => { process.exitCode = 0; }).catch(() => { process.exitCode = 1; });
+      app.shutdown().then(() => {
+        process.exitCode = 0;
+        if (process.connected) process.disconnect();
+      }).catch(() => { process.exitCode = 1; });
     };
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
+    if (typeof process.send === 'function') {
+      process.on('message', message => {
+        if (message && Object.getPrototypeOf(message) === Object.prototype && Object.keys(message).length === 1 && message.type === 'crm:shutdown') stop();
+      });
+    }
   } catch (error) {
     process.stderr.write(`CRM_STARTUP_FAILED ${error.code || 'ERROR'}\n`);
     process.exitCode = 1;

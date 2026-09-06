@@ -42,7 +42,7 @@ npm run crm:test
 CRM_HOST=127.0.0.1 CRM_PORT=4311 CRM_DATA_DIR=/safe/local/crm-demo npm run crm:start
 ```
 
-端口必须是 1–65535 的整数；主机不能为空且不得包含控制字符；数据路径必须是目录。按 `Ctrl+C` 或发送 `SIGTERM` 会先停止 HTTP 服务，再关闭 SQLite，一次且仅一次。
+端口必须是 1–65535 的整数；主机不能为空且不得包含控制字符；数据路径必须是目录。按 `Ctrl+C` 或发送 `SIGTERM` 会先停止 HTTP 服务，再关闭 SQLite，一次且仅一次。Windows 本地控制台请使用 `Ctrl+C`；仅在 Node IPC 通道存在时，父进程可发送固定的 `{ type: 'crm:shutdown' }` 控制消息，供测试或托管父进程使用，HTTP 不提供该能力。
 
 首次启动会用真实业务服务写入三名固定虚构学员及虚构合同、已确认/待处理资金流水和一条人工接管会话。所有写入均使用固定幂等请求号，重复启动或中断后的再次启动不会重复生成数据。
 

@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { mkdtempSync, rmSync, writeFileSync, readFileSync } = require('node:fs');
 const { join, resolve } = require('node:path');
 const { tmpdir, homedir } = require('node:os');
-const { spawn } = require('node:child_process');
+const { spawn, fork } = require('node:child_process');
 const http = require('node:http');
 const { resolveConfig, startCrm } = require('../src/index');
 
@@ -23,12 +23,13 @@ function freePort() {
   });
 }
 
-function start({ port, dataDir, extraEnv = {} }) {
-  const child = spawn(process.execPath, [entry], {
+function start({ port, dataDir, extraEnv = {}, ipc = false }) {
+  const options = {
     cwd: root,
     env: { ...process.env, CRM_HOST: '127.0.0.1', CRM_PORT: String(port), CRM_DATA_DIR: dataDir, ...extraEnv },
-    stdio: ['ignore', 'pipe', 'pipe']
-  });
+    stdio: ipc ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe']
+  };
+  const child = ipc ? fork(entry, [], options) : spawn(process.execPath, [entry], options);
   let output = '';
   child.stdout.on('data', chunk => { output += chunk; });
   child.stderr.on('data', chunk => { output += chunk; });
@@ -92,9 +93,18 @@ async function customers(port) {
 
 async function stopProcess(processInfo) {
   if (globalThis.process.platform !== 'win32') return stopped(processInfo);
-  processInfo.child.kill('SIGTERM');
-  await new Promise(resolveDelay => setTimeout(resolveDelay, 100));
-  return processInfo.child.exitCode === null ? stopped(processInfo, 'SIGKILL') : { code: processInfo.child.exitCode, signal: processInfo.child.signalCode };
+  return new Promise((resolveStop, reject) => {
+    const { child } = processInfo;
+    const timeout = setTimeout(() => reject(new Error(`IPC shutdown did not exit within 5 seconds: ${processInfo.output()}`)), 5_000);
+    child.send({ type: 'crm:shutdown', ignored: true }, error => {
+      if (error) { clearTimeout(timeout); reject(error); return; }
+      setTimeout(() => {
+        if (child.exitCode !== null) { clearTimeout(timeout); reject(new Error('non-fixed IPC message stopped CRM')); return; }
+        child.once('exit', (code, signal) => { clearTimeout(timeout); resolveStop({ code, signal }); });
+        child.send({ type: 'crm:shutdown' }, sendError => { if (sendError) { clearTimeout(timeout); reject(sendError); } });
+      }, 50);
+    });
+  });
 }
 
 test('entrypoint becomes healthy only after fictional seed and reopens without duplication', { timeout: 30_000 }, async t => {
@@ -106,7 +116,7 @@ test('entrypoint becomes healthy only after fictional seed and reopens without d
   });
 
   const firstPort = await freePort();
-  const first = start({ port: firstPort, dataDir });
+  const first = start({ port: firstPort, dataDir, ipc: process.platform === 'win32' });
   processes.push(first);
   await waitForHealth(first, firstPort);
   assert.match(first.output(), new RegExp(`CRM_READY http://127\\.0\\.0\\.1:${firstPort}`));
@@ -125,17 +135,17 @@ test('entrypoint becomes healthy only after fictional seed and reopens without d
   ]);
   assert.equal((await request(`http://127.0.0.1:${firstPort}/`)).status, 200);
   const firstExit = await stopProcess(first);
-  if (process.platform === 'win32') assert.ok(firstExit.missing || firstExit.signal === 'SIGKILL');
+  if (process.platform === 'win32') assert.deepEqual(firstExit, { code: 0, signal: null });
   else assert.deepEqual(firstExit, { code: 0, signal: null });
 
   const secondPort = await freePort();
-  const second = start({ port: secondPort, dataDir });
+  const second = start({ port: secondPort, dataDir, ipc: process.platform === 'win32' });
   processes.push(second);
   await waitForHealth(second, secondPort);
   const secondDashboard = await dashboard(secondPort);
   assert.deepEqual(secondDashboard, firstDashboard);
   const secondExit = await stopProcess(second);
-  if (process.platform === 'win32') assert.ok(secondExit.missing || secondExit.signal === 'SIGKILL');
+  if (process.platform === 'win32') assert.deepEqual(secondExit, { code: 0, signal: null });
   else assert.deepEqual(secondExit, { code: 0, signal: null });
 });
 
