@@ -57,7 +57,7 @@ function createCrmService({ store, clock = () => new Date() }) {
     if (!row) fail('NOT_FOUND');
     return JSON.parse(row.payload);
   };
-  function write(input, action, work) {
+  function write(input, action, requiredPermissions, work) {
     record(input, 'INVALID_REQUEST');
     const actor = actorSnapshot(input.actor);
     const requestId = string(input.requestId, 'INVALID_REQUEST_ID', { required: true });
@@ -68,7 +68,8 @@ function createCrmService({ store, clock = () => new Date() }) {
         if (previous) {
           if (previous.actor_id !== actor.id || previous.actor_signature !== signature) fail('FORBIDDEN');
           if (previous.action !== action) fail('REQUEST_ID_CONFLICT');
-          assertAllowed(actor, 'customer.write', loadCustomer(previous.customer_id));
+          const customer = loadCustomer(previous.customer_id);
+          for (const permission of requiredPermissions) assertAllowed(actor, permission, customer);
           return JSON.parse(previous.result);
         }
         const timestamp = date(clock());
@@ -87,7 +88,7 @@ function createCrmService({ store, clock = () => new Date() }) {
     }
   }
   function importCustomer(input) {
-    return write(input, 'customer.import', (actor, timestamp) => {
+    return write(input, 'customer.import', ['customer.write'], (actor, timestamp) => {
       const candidate = customerPayload(input.customer);
       assertAllowed(actor, 'customer.write', candidate);
       const rawSource = input.source === undefined ? {} : record(input.source, 'INVALID_SOURCE');
@@ -153,7 +154,7 @@ function createCrmService({ store, clock = () => new Date() }) {
     return order;
   }
   function createOrder(input) {
-    return write(input, 'order.create', (actor, timestamp) => {
+    return write(input, 'order.create', ['customer.write'], (actor, timestamp) => {
       const customer = loadCustomer(input.customerId);
       assertAllowed(actor, 'customer.write', customer);
       const raw = record(input.order, 'INVALID_ORDER');
@@ -169,10 +170,10 @@ function createCrmService({ store, clock = () => new Date() }) {
     });
   }
   function appendPayment(input) {
-    return write(input, 'ledger.append', (actor, timestamp) => {
+    return write(input, 'ledger.append', ['ledger.write'], (actor, timestamp) => {
       const order = loadOrder(input.orderId);
       const customer = loadCustomer(order.customerId);
-      assertAllowed(actor, 'customer.write', customer);
+      assertAllowed(actor, 'ledger.write', customer);
       const raw = record(input.entry, 'INVALID_LEDGER_ENTRY');
       const entry = { id: crypto.randomUUID() };
       for (const field of ['type', 'idempotencyKey', 'amountCents', 'status', 'direction']) if (Object.hasOwn(raw, field)) entry[field] = raw[field];
@@ -188,7 +189,7 @@ function createCrmService({ store, clock = () => new Date() }) {
     });
   }
   function triageConversation(input) {
-    return write(input, 'conversation.triage', (actor, timestamp) => {
+    return write(input, 'conversation.triage', ['customer.write', 'conversation.read'], (actor, timestamp) => {
       const customer = loadCustomer(input.customerId);
       assertAllowed(actor, 'customer.write', customer);
       assertAllowed(actor, 'conversation.read', customer);

@@ -18,7 +18,7 @@ test('exports the frozen six-role list', () => {
 
 test('admin allows listed actions globally but denies unknown actions', () => {
   const a = actor(['admin'], { campusIds: [] });
-  for (const action of ['organization.manage', 'customer.read', 'customer.write', 'customer.sensitive.read', 'customer.phone.read', 'conversation.read', 'student.read', 'order.read']) assert.equal(can(a, action, {}), true);
+  for (const action of ['organization.manage', 'customer.read', 'customer.write', 'customer.sensitive.read', 'customer.phone.read', 'conversation.read', 'student.read', 'order.read', 'ledger.write']) assert.equal(can(a, action, {}), true);
   assert.equal(can(a, 'customer.delete', {}), false);
 });
 
@@ -32,6 +32,7 @@ test('supervisor requires matching campus and team', () => {
 test('service requires matching campus and owner', () => {
   const a = actor(['service']);
   assert.equal(can(a, 'customer.read', resource()), true);
+  assert.equal(can(a, 'ledger.write', resource()), false);
   assert.equal(can(a, 'conversation.read', resource({ ownerId: 'u-2' })), false);
   assert.equal(can(a, 'customer.write', resource({ campusId: 'campus-b' })), false);
 });
@@ -39,6 +40,7 @@ test('service requires matching campus and owner', () => {
 test('consultant requires matching campus and assigned owner', () => {
   const a = actor(['consultant']);
   assert.equal(can(a, 'customer.write', resource()), true);
+  assert.equal(can(a, 'ledger.write', resource()), false);
   assert.equal(can(a, 'customer.read', resource({ ownerId: 'u-2' })), false);
   assert.equal(can(a, 'conversation.read', resource({ campusId: 'campus-b' })), false);
 });
@@ -54,7 +56,7 @@ test('teacher reads only assigned students on matching campus', () => {
 test('finance reads orders/customers and phone only in matching campus', () => {
   const a = actor(['finance']);
   for (const action of ['order.read', 'customer.read', 'customer.phone.read']) assert.equal(can(a, action, resource()), true);
-  for (const action of ['conversation.read', 'customer.write', 'customer.sensitive.read', 'organization.manage']) assert.equal(can(a, action, resource()), false);
+  for (const action of ['conversation.read', 'customer.write', 'customer.sensitive.read', 'organization.manage', 'ledger.write']) assert.equal(can(a, action, resource()), false);
   assert.equal(can(a, 'order.read', resource({ campusId: 'campus-b' })), false);
 });
 

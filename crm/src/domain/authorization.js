@@ -26,7 +26,7 @@ function ownerMatches(actor, resource) {
 function roleAllows(actor, role, action, resource) {
   if (role === 'admin') {
     return ['organization.manage', 'customer.read', 'customer.write', 'customer.sensitive.read',
-      'customer.phone.read', 'conversation.read', 'student.read', 'order.read'].includes(action);
+      'customer.phone.read', 'conversation.read', 'student.read', 'order.read', 'ledger.write'].includes(action);
   }
   if (role === 'supervisor') {
     return ['customer.read', 'customer.write', 'conversation.read'].includes(action) &&

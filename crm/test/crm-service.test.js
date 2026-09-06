@@ -218,15 +218,18 @@ test('duplicate ledger keys across requests and orders never overwrite earlier e
   assert.equal(row.amountCents, 300_000); assert.equal(row.status, 'pending');
 });
 
-test('order and ledger permissions use actual customer scope and finance remains read-only', (t) => {
+test('order and ledger permissions use actual customer scope and ledger writes require admin', (t) => {
   const { store, service } = fixture(t);
   const customerId = imported(service).customer.id;
   const orderId = quoted(service, customerId, 'owned', {}, serviceActor).order.id;
-  paid(service, orderId, 'allowed', {}, serviceActor);
-  const outsiders = [financeActor, { ...serviceActor, id: 'other' }, { ...serviceActor, campusIds: ['campus-b'] }, null];
+  paid(service, orderId, 'allowed', {}, admin);
+  const orderOutsiders = [financeActor, { ...serviceActor, id: 'other' }, { ...serviceActor, campusIds: ['campus-b'] }, null];
+  const ledgerOutsiders = [serviceActor, ...orderOutsiders];
   const before = counts(store);
-  for (const actor of outsiders) {
+  for (const actor of orderOutsiders) {
     assert.throws(() => quoted(service, customerId, 'forbidden-order', {}, actor), { code: 'FORBIDDEN' });
+  }
+  for (const actor of ledgerOutsiders) {
     assert.throws(() => paid(service, orderId, 'forbidden-payment', { ownerId: actor?.id }, actor), { code: 'FORBIDDEN' });
   }
   assert.deepEqual(counts(store), before);
