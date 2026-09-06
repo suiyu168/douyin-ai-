@@ -4,9 +4,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { readFileSync, mkdtempSync, rmSync } = require('node:fs');
 const { join } = require('node:path');
+const path = require('node:path');
 const { tmpdir } = require('node:os');
 const http = require('node:http');
-const { createServer } = require('../src/http/server');
+const { createServer, isPathWithin } = require('../src/http/server');
 
 const publicDir = join(__dirname, '..', 'public');
 
@@ -196,6 +197,19 @@ test('static files require an exact raw request target and reject normalized tra
     }
     for (const target of ['/', '/index.html', '/styles.css', '/app.js']) assert.equal((await rawTargetRequest(base, target)).status, 200, target);
   });
+});
+
+test('static root containment is platform-neutral and fails closed outside the resolved root', () => {
+  const cases = [
+    [path.win32, 'C:\\crm\\public', 'C:\\crm\\public\\styles.css', true],
+    [path.win32, 'C:\\crm\\public', 'C:\\crm\\publicity\\styles.css', false],
+    [path.win32, 'C:\\crm\\public', 'C:\\crm\\public\\..\\secret.txt', false],
+    [path.win32, 'C:\\crm\\public', 'D:\\other\\styles.css', false],
+    [path.posix, '/srv/crm/public', '/srv/crm/public/app.js', true],
+    [path.posix, '/srv/crm/public', '/srv/crm/publicity/app.js', false],
+    [path.posix, '/srv/crm/public', '/srv/crm/public/../secret.txt', false]
+  ];
+  for (const [pathApi, root, candidate, expected] of cases) assert.equal(isPathWithin(root, candidate, pathApi), expected, candidate);
 });
 
 test('API routing matches only the exact raw pathname while retaining allowed query scopes', async () => {

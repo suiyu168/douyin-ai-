@@ -12,6 +12,11 @@ const STATIC_FILES = Object.freeze({
   '/app.js': { file: 'app.js', type: 'text/javascript; charset=utf-8' }
 });
 
+function isPathWithin(root, candidate, pathApi = require('node:path')) {
+  const relative = pathApi.relative(pathApi.resolve(root), pathApi.resolve(candidate));
+  return relative === '' || (!relative.startsWith('..') && !pathApi.isAbsolute(relative));
+}
+
 function createServer({ service, publicDir = resolve(__dirname, '../../public') }) {
   const root = resolve(publicDir);
   const routeApi = createApiRouter({ service });
@@ -21,7 +26,7 @@ function createServer({ service, publicDir = resolve(__dirname, '../../public') 
       const asset = typeof request.url === 'string' && !request.url.includes('?') && STATIC_FILES[request.url];
       if (!asset || !['GET', 'HEAD'].includes(request.method)) { response.writeHead(404, { 'x-content-type-options': 'nosniff' }); response.end(); return; }
       const path = resolve(root, asset.file);
-      if (!path.startsWith(`${root}\\`) && path !== root) { response.writeHead(404); response.end(); return; }
+      if (!isPathWithin(root, path)) { response.writeHead(404); response.end(); return; }
       const headers = { 'content-type': asset.type, 'x-content-type-options': 'nosniff' };
       if (asset.csp) headers['content-security-policy'] = "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'";
       const body = await readFile(path);
@@ -35,4 +40,4 @@ function createServer({ service, publicDir = resolve(__dirname, '../../public') 
   });
 }
 
-module.exports = { createServer };
+module.exports = { createServer, isPathWithin };
