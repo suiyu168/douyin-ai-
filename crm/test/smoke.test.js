@@ -51,7 +51,7 @@ async function waitForHealth(process, port) {
   const deadline = Date.now() + 10_000;
   let lastError;
   while (Date.now() < deadline) {
-    if (process.child.exitCode !== null) throw new Error(`CRM exited before readiness: ${process.output()}`);
+    if (hasTerminated(process.child)) throw new Error(`CRM exited before readiness: ${process.output()}`);
     try {
       const response = await request(`http://127.0.0.1:${port}/api/health`);
       if (response.status === 200 && JSON.parse(response.body).ok === true) return;
@@ -64,7 +64,7 @@ async function waitForHealth(process, port) {
 function stopped(process, signal = 'SIGTERM') {
   const { child } = process;
   return new Promise((resolveStop, reject) => {
-    if (child.exitCode !== null) return resolveStop({ code: child.exitCode, signal: child.signalCode });
+    if (hasTerminated(child)) return resolveStop({ code: child.exitCode, signal: child.signalCode });
     const timeout = setTimeout(() => reject(new Error(`child did not stop within 5 seconds: ${process.output()}`)), 5_000);
     child.once('exit', (code, exitSignal) => { clearTimeout(timeout); resolveStop({ code, signal: exitSignal }); });
     if (!child.kill(signal)) { clearTimeout(timeout); resolveStop({ code: child.exitCode, signal: child.signalCode, missing: true }); }
@@ -97,7 +97,7 @@ async function forceStop(processInfo) {
 
 function waitForExit(child) {
   return new Promise((resolveExit, reject) => {
-    if (child.exitCode !== null) return resolveExit({ code: child.exitCode, signal: child.signalCode });
+    if (hasTerminated(child)) return resolveExit({ code: child.exitCode, signal: child.signalCode });
     const timeout = setTimeout(() => reject(new Error('child did not reject invalid configuration within 5 seconds')), 5_000);
     child.once('exit', (code, signal) => { clearTimeout(timeout); resolveExit({ code, signal }); });
   });
@@ -145,7 +145,7 @@ async function stopProcess(processInfo) {
     child.send({ type: 'crm:shutdown', ignored: true }, error => {
       if (error) { clearTimeout(timeout); reject(error); return; }
       setTimeout(() => {
-        if (child.exitCode !== null) { clearTimeout(timeout); reject(new Error('non-fixed IPC message stopped CRM')); return; }
+        if (hasTerminated(child)) { clearTimeout(timeout); reject(new Error('non-fixed IPC message stopped CRM')); return; }
         child.once('exit', (code, signal) => { clearTimeout(timeout); resolveStop({ code, signal }); });
         child.send({ type: 'crm:shutdown' }, sendError => { if (sendError) { clearTimeout(timeout); reject(sendError); } });
       }, 50);
@@ -169,6 +169,50 @@ async function cleanupProcess(processInfo) {
     throw gracefulError;
   }
 }
+
+test('exit helpers immediately recognize an already signalled child', { timeout: 15_000 }, async t => {
+  const processInfo = {
+    child: spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }),
+    output: () => 'already signalled child'
+  };
+  t.after(() => forceStop(processInfo));
+  await forceStop(processInfo);
+  assert.equal(processInfo.child.exitCode, null);
+  assert.equal(processInfo.child.signalCode, 'SIGKILL');
+  const port = await freePort();
+  const started = performance.now();
+  const results = await Promise.allSettled([
+    stopped(processInfo),
+    waitForExit(processInfo.child),
+    waitForHealth(processInfo, port)
+  ]);
+  assert.deepEqual(results[0], { status: 'fulfilled', value: { code: null, signal: 'SIGKILL' } });
+  assert.deepEqual(results[1], { status: 'fulfilled', value: { code: null, signal: 'SIGKILL' } });
+  assert.equal(results[2].status, 'rejected');
+  assert.match(results[2].reason.message, /CRM exited before readiness/);
+  assert.ok(performance.now() - started < 1_000, 'terminal children must not wait for helper timeouts');
+});
+
+test('IPC shutdown detects a signal exit after the non-fixed message', { skip: process.platform !== 'win32', timeout: 5_000 }, async t => {
+  const child = spawn(process.execPath, ['-e',
+    "process.on('message', () => {}); console.log('ready')"
+  ], { stdio: ['ignore', 'pipe', 'ignore', 'ipc'] });
+  const processInfo = { child, output: () => '' };
+  t.after(() => forceStop(processInfo));
+  await new Promise(resolveReady => child.stdout.once('data', resolveReady));
+  const send = child.send.bind(child);
+  child.send = (message, callback) => {
+    return send(message, async error => {
+      if (error) return callback(error);
+      // Delay successful delivery notification until the real exit event has occurred.
+      await forceStop(processInfo);
+      callback(null);
+    });
+  };
+  await assert.rejects(stopProcess(processInfo), /non-fixed IPC message stopped CRM/);
+  assert.equal(child.exitCode, null);
+  assert.equal(child.signalCode, 'SIGKILL');
+});
 
 test('entrypoint becomes healthy only after fictional seed and reopens without duplication', { timeout: 30_000 }, async t => {
   const dataDir = mkdtempSync(join(tmpdir(), 'chengqiyun-smoke-'));
