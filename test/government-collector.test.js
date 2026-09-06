@@ -470,6 +470,7 @@ test('低频扫描公开公告并自动分类入库', async (t) => {
     dataDir,
     requestDelayMs: 0,
     sources: CCGP_SOURCES,
+    now: () => Date.parse('2026-08-29T12:00:00+08:00'),
     fetchImpl: async (url) => {
       if (!bodies.has(url)) return { ok: false, status: 404, headers: { get: () => null }, text: async () => '' }
       return mockResponse(bodies.get(url))
