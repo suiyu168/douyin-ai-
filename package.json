@@ -6,7 +6,9 @@
   "scripts": {
     "start": "electron .",
     "app": "electron app/",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "crm:start": "node crm/src/index.js",
+    "crm:test": "node --test crm/test/*.test.js"
   },
   "devDependencies": {
     "electron": "^43.3.0"
