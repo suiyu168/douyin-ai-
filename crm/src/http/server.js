@@ -24,8 +24,8 @@ function createServer({ service, publicDir = resolve(__dirname, '../../public') 
       if (!path.startsWith(`${root}\\`) && path !== root) { response.writeHead(404); response.end(); return; }
       const headers = { 'content-type': asset.type, 'x-content-type-options': 'nosniff' };
       if (asset.csp) headers['content-security-policy'] = "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'";
-      if (request.method === 'HEAD') { response.writeHead(200, headers); response.end(); return; }
       const body = await readFile(path);
+      if (request.method === 'HEAD') { response.writeHead(200, headers); response.end(); return; }
       response.writeHead(200, headers);
       response.end(body);
     } catch {

@@ -221,14 +221,18 @@ test('405 Allow advertises only the methods implemented by each API route', asyn
   });
 });
 
-test('a missing allowlisted public file fails closed with 404', async () => {
+test('a missing allowlisted public file fails closed with 404 for GET and HEAD', async () => {
   const emptyPublicDir = mkdtempSync(join(tmpdir(), 'chengqiyun-empty-public-'));
   try {
     const server = createServer({ service: spyService().service, publicDir: emptyPublicDir });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     try {
-      const response = await fetch(`http://127.0.0.1:${server.address().port}/`);
-      assert.equal(response.status, 404);
+      const base = `http://127.0.0.1:${server.address().port}/`;
+      for (const method of ['GET', 'HEAD']) {
+        const response = await fetch(base, { method });
+        assert.equal(response.status, 404, method);
+        assert.equal(await response.text(), '', method);
+      }
     } finally { await new Promise(resolve => server.close(resolve)); }
   } finally { rmSync(emptyPublicDir, { recursive: true, force: true }); }
 });
