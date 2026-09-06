@@ -103,6 +103,27 @@ function waitForExit(child) {
   });
 }
 
+function registerInvalidStartupCleanup(t, parent) {
+  const processes = [];
+  t.after(async () => {
+    const errors = [];
+    try {
+      for (const processInfo of processes) {
+        try {
+          // A startup timeout remains a test failure; recovery only prevents an orphan.
+          await forceStop(processInfo);
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+      if (errors.length) throw new AggregateError(errors, 'Invalid startup child recovery failed');
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+  return processes;
+}
+
 async function dashboard(port) {
   const response = await request(`http://127.0.0.1:${port}/api/dashboard`, { 'x-demo-user': 'admin-1' });
   assert.equal(response.status, 200);
@@ -247,13 +268,36 @@ test('configuration defaults to a local loopback database and accepts explicit s
   });
 });
 
+test('invalid startup timeout cleanup terminates every registered child', { timeout: 20_000 }, async t => {
+  const parent = mkdtempSync(join(tmpdir(), 'chengqiyun-invalid-timeout-'));
+  let cleanup;
+  const processes = registerInvalidStartupCleanup({ after: callback => { cleanup = callback; } }, parent);
+  t.after(async () => {
+    try {
+      for (const processInfo of processes) await forceStop(processInfo);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+  for (let index = 0; index < 2; index++) {
+    processes.push({
+      child: spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }),
+      output: () => ''
+    });
+  }
+  await assert.rejects(waitForExit(processes[0].child), /child did not reject invalid configuration/);
+  await cleanup();
+  for (const processInfo of processes) assert.equal(hasTerminated(processInfo.child), true);
+});
+
 test('invalid startup configuration fails closed and never deletes an existing target', { timeout: 20_000 }, async t => {
   const parent = mkdtempSync(join(tmpdir(), 'chengqiyun-invalid-'));
+  const processes = registerInvalidStartupCleanup(t, parent);
   const fileTarget = join(parent, 'keep-me.txt');
   writeFileSync(fileTarget, 'do not overwrite');
-  t.after(() => rmSync(parent, { recursive: true, force: true }));
   for (const extraEnv of [{ CRM_PORT: '0' }, { CRM_HOST: 'bad\nhost' }, { CRM_DATA_DIR: fileTarget }]) {
     const process = start({ port: await freePort(), dataDir: join(parent, 'unused'), extraEnv });
+    processes.push(process);
     const result = await waitForExit(process.child);
     assert.notEqual(result.code, 0, process.output());
     assert.equal(readFileSync(fileTarget, 'utf8'), 'do not overwrite');
