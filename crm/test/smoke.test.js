@@ -71,6 +71,16 @@ function stopped(process, signal = 'SIGTERM') {
   });
 }
 
+function naturalExit(result) {
+  if (!result.missing && result.code === 0 && result.signal === null) return { code: result.code, signal: result.signal };
+  throw new Error(`CRM did not exit cleanly: ${JSON.stringify(result)}`);
+}
+
+async function forceStop(processInfo) {
+  if (processInfo.child.exitCode !== null) return;
+  try { await stopped(processInfo, 'SIGKILL'); } catch { /* Emergency cleanup must not hide the original graceful-stop failure. */ }
+}
+
 function waitForExit(child) {
   return new Promise((resolveExit, reject) => {
     if (child.exitCode !== null) return resolveExit({ code: child.exitCode, signal: child.signalCode });
@@ -92,9 +102,10 @@ async function customers(port) {
 }
 
 async function stopProcess(processInfo) {
-  if (globalThis.process.platform !== 'win32') return stopped(processInfo);
-  return new Promise((resolveStop, reject) => {
+  if (globalThis.process.platform !== 'win32') return naturalExit(await stopped(processInfo));
+  const result = await new Promise((resolveStop, reject) => {
     const { child } = processInfo;
+    if (typeof child.send !== 'function') { reject(new Error('IPC shutdown is unavailable')); return; }
     const timeout = setTimeout(() => reject(new Error(`IPC shutdown did not exit within 5 seconds: ${processInfo.output()}`)), 5_000);
     child.send({ type: 'crm:shutdown', ignored: true }, error => {
       if (error) { clearTimeout(timeout); reject(error); return; }
@@ -105,13 +116,24 @@ async function stopProcess(processInfo) {
       }, 50);
     });
   });
+  return naturalExit(result);
+}
+
+async function cleanupProcess(processInfo) {
+  if (processInfo.child.exitCode !== null) return;
+  try {
+    return await stopProcess(processInfo);
+  } catch (error) {
+    await forceStop(processInfo);
+    throw error;
+  }
 }
 
 test('entrypoint becomes healthy only after fictional seed and reopens without duplication', { timeout: 30_000 }, async t => {
   const dataDir = mkdtempSync(join(tmpdir(), 'chengqiyun-smoke-'));
   const processes = [];
   t.after(async () => {
-    await Promise.all(processes.map(process => process.child.exitCode === null ? stopped(process, 'SIGKILL') : undefined));
+    await Promise.all(processes.map(process => process.child.exitCode === null ? cleanupProcess(process) : undefined));
     rmSync(dataDir, { recursive: true, force: true });
   });
 
@@ -147,6 +169,20 @@ test('entrypoint becomes healthy only after fictional seed and reopens without d
   const secondExit = await stopProcess(second);
   if (process.platform === 'win32') assert.deepEqual(secondExit, { code: 0, signal: null });
   else assert.deepEqual(secondExit, { code: 0, signal: null });
+});
+
+test('cleanup accepts only a natural graceful exit and rethrows after emergency child recovery', { timeout: 20_000 }, async t => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'chengqiyun-cleanup-'));
+  const port = await freePort();
+  const crm = start({ port, dataDir, ipc: process.platform === 'win32' });
+  const stubborn = { child: spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']), output: () => '' };
+  t.after(async () => {
+    await Promise.all([crm, stubborn].map(processInfo => processInfo.child.exitCode === null ? forceStop(processInfo) : undefined));
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+  await waitForHealth(crm, port);
+  assert.deepEqual(await cleanupProcess(crm), { code: 0, signal: null });
+  await assert.rejects(cleanupProcess(stubborn), /did not exit cleanly|IPC shutdown/);
 });
 
 test('composition helper stops HTTP before closing the seeded SQLite store', { timeout: 20_000 }, async t => {
