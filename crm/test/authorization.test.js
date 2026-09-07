@@ -6,6 +6,7 @@ const {
   can,
   assertAllowed,
   maskSensitiveCustomer,
+  maskModuleCustomerSummary,
 } = require('../src/domain/authorization');
 
 const actor = (roles, extra = {}) => ({ id: 'u-1', roles, campusIds: ['campus-a'], ...extra });
@@ -51,6 +52,46 @@ test('teacher reads only assigned students on matching campus', () => {
   assert.equal(can(a, 'student.read', resource({ assignedTeacherId: 'u-2' })), false);
   assert.equal(can(a, 'student.read', resource({ campusId: 'campus-b' })), false);
   assert.equal(can(a, 'customer.read', resource()), false);
+});
+
+test('enrollment actions separate submission from scoped approval', () => {
+  const own = { id: 'c', campusId: 'campus-a', teamId: 'team-a', ownerId: 'consultant-1', assignedTeacherId: 'teacher-1' };
+  assert.equal(can(actor(['consultant'], { id: 'consultant-1' }), 'enrollment.submit', own), true);
+  assert.equal(can(actor(['consultant'], { id: 'consultant-1' }), 'enrollment.decide', own), false);
+  assert.equal(can(actor(['supervisor'], { id: 'supervisor-1', teamIds: ['team-a'] }), 'enrollment.decide', own), true);
+  assert.equal(can(actor(['supervisor'], { id: 'supervisor-1', teamIds: ['team-b'] }), 'enrollment.decide', own), false);
+  assert.equal(can(actor(['service'], { id: 'consultant-1' }), 'enrollment.submit', own), false);
+});
+
+test('task actions allow scoped supervisors and the customer owner only', () => {
+  const own = { campusId: 'campus-a', teamId: 'team-a', ownerId: 'consultant-1' };
+  for (const role of ['consultant', 'service']) assert.equal(can(actor([role], { id: 'consultant-1' }), 'task.update', own), true);
+  assert.equal(can(actor(['consultant'], { id: 'other' }), 'task.update', own), false);
+  assert.equal(can(actor(['finance'], { id: 'finance-1' }), 'task.read', own), false);
+});
+
+test('student summaries require student.read and always mask the phone', () => {
+  const customer = { id: 'c', name: '虚构客户', phone: '13800138000', idNumber: '110101199001011234', wechat: 'secret', notes: 'private', campusId: 'campus-a', teamId: 'team-a', ownerId: 'consultant-1', assignedTeacherId: 'teacher-1' };
+  assert.deepEqual(maskModuleCustomerSummary(customer, actor(['teacher'], { id: 'teacher-1' }), 'student.read'), {
+    id: 'c', name: '虚构客户', maskedPhone: '138****8000', campusId: 'campus-a', teamId: 'team-a', assignedTeacherId: 'teacher-1',
+  });
+  assert.throws(() => maskModuleCustomerSummary(customer, actor(['finance'], { id: 'finance-1' }), 'student.read'), { code: 'FORBIDDEN' });
+});
+
+test('new action matrix grants only the stated role and scoped resource combinations', () => {
+  const scoped = resource({ ownerId: 'consultant-1', assignedTeacherId: 'teacher-1' });
+  const supervisor = actor(['supervisor'], { id: 'supervisor-1', teamIds: ['team-a'] });
+  const consultant = actor(['consultant'], { id: 'consultant-1' });
+  const service = actor(['service'], { id: 'consultant-1' });
+  const teacher = actor(['teacher'], { id: 'teacher-1' });
+  const finance = actor(['finance'], { id: 'finance-1' });
+
+  for (const action of ['enrollment.read', 'enrollment.decide', 'student.read', 'task.read', 'task.create', 'task.update']) assert.equal(can(supervisor, action, scoped), true);
+  for (const action of ['enrollment.read', 'enrollment.submit', 'task.read', 'task.create', 'task.update']) assert.equal(can(consultant, action, scoped), true);
+  for (const action of ['task.read', 'task.create', 'task.update']) assert.equal(can(service, action, scoped), true);
+  assert.equal(can(teacher, 'student.read', scoped), true);
+  for (const action of ['enrollment.submit', 'student.read', 'task.read', 'task.create', 'task.update']) assert.equal(can(supervisor, action, resource({ campusId: 'campus-b', ownerId: 'consultant-1', assignedTeacherId: 'teacher-1' })), false);
+  for (const action of ['enrollment.read', 'enrollment.submit', 'student.read', 'task.read', 'task.create', 'task.update']) assert.equal(can(finance, action, scoped), false);
 });
 
 test('finance reads orders/customers and phone only in matching campus', () => {

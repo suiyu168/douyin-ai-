@@ -26,19 +26,22 @@ function ownerMatches(actor, resource) {
 function roleAllows(actor, role, action, resource) {
   if (role === 'admin') {
     return ['organization.manage', 'customer.read', 'customer.write', 'customer.sensitive.read',
-      'customer.phone.read', 'conversation.read', 'student.read', 'order.read', 'ledger.write'].includes(action);
+      'customer.phone.read', 'conversation.read', 'enrollment.read', 'enrollment.submit', 'enrollment.decide',
+      'student.read', 'task.read', 'task.create', 'task.update', 'order.read', 'ledger.write'].includes(action);
   }
   if (role === 'supervisor') {
-    return ['customer.read', 'customer.write', 'conversation.read'].includes(action) &&
+    return ['customer.read', 'customer.write', 'conversation.read', 'enrollment.read', 'enrollment.decide',
+      'student.read', 'task.read', 'task.create', 'task.update'].includes(action) &&
       campusMatches(actor, resource) && own(actor, 'teamIds') && Array.isArray(actor.teamIds) &&
       own(resource, 'teamId') && nonBlank(resource.teamId) && actor.teamIds.includes(resource.teamId);
   }
   if (role === 'service') {
-    return ['customer.read', 'customer.write', 'conversation.read'].includes(action) &&
+    return ['customer.read', 'customer.write', 'conversation.read', 'task.read', 'task.create', 'task.update'].includes(action) &&
       campusMatches(actor, resource) && ownerMatches(actor, resource);
   }
   if (role === 'consultant') {
-    return ['customer.read', 'customer.write', 'conversation.read'].includes(action) &&
+    return ['customer.read', 'customer.write', 'conversation.read', 'enrollment.read', 'enrollment.submit',
+      'task.read', 'task.create', 'task.update'].includes(action) &&
       campusMatches(actor, resource) && ownerMatches(actor, resource);
   }
   if (role === 'teacher') {
@@ -100,4 +103,19 @@ function maskSensitiveCustomer(customer, actor) {
   return view;
 }
 
-module.exports = { ROLES, can, assertAllowed, maskSensitiveCustomer };
+function maskModuleCustomerSummary(customer, actor, action) {
+  if (!['enrollment.read', 'student.read', 'task.read'].includes(action)) {
+    assertAllowed(actor, '__invalid_summary_action__', customer);
+  }
+  assertAllowed(actor, action, customer);
+  return Object.freeze({
+    id: customer.id,
+    name: customer.name,
+    maskedPhone: maskPhone(customer.phone ?? ''),
+    campusId: customer.campusId,
+    teamId: customer.teamId,
+    assignedTeacherId: customer.assignedTeacherId ?? '',
+  });
+}
+
+module.exports = { ROLES, can, assertAllowed, maskSensitiveCustomer, maskModuleCustomerSummary };
