@@ -14,8 +14,8 @@ function normalizeWechat(value) {
 
 function normalizeIdLast4(value) {
   if (value === null || value === undefined) return '';
-  const text = String(value).trim();
-  return /^\d{4}$/.test(text) ? text : '';
+  const text = String(value).trim().toUpperCase();
+  return /^\d{3}[\dX]$/.test(text) ? text : '';
 }
 
 function digest(field, value) {
@@ -82,6 +82,7 @@ function decideDuplicate(candidate = {}, existing = []) {
 module.exports = {
   normalizePhone,
   normalizeWechat,
+  normalizeIdLast4,
   customerFingerprint,
   decideDuplicate,
 };

@@ -75,6 +75,42 @@ test('cross-batch phone and WeChat matches retain one master and each source', (
   assert.equal(store.db.prepare('SELECT count(*) AS n FROM audit_events').get().n, 3);
 });
 
+test('phone merges enrich only blank master fields and audit only names those changes', (t) => {
+  const { store, service } = fixture(t);
+  const first = service.importCustomer({ actor: admin, requestId: 'phone-only', customer: customerInput({ wechat: '', notes: '', name: '原始姓名' }), source: { channel: 'demo', batch: 'batch-a' } });
+  const merged = service.importCustomer({ actor: admin, requestId: 'phone-enrichment', customer: customerInput({
+    wechat: 'new_wechat', notes: '新来源备注', name: '不应覆盖姓名', ownerId: 'service-2', campusId: 'campus-b', teamId: 'team-b',
+  }), source: { channel: 'manual', batch: 'batch-b' } });
+  const retried = service.importCustomer({ actor: admin, requestId: 'phone-enrichment', customer: customerInput({ wechat: 'different_wechat' }), source: { channel: 'changed', batch: 'changed' } });
+  const stored = JSON.parse(store.db.prepare('SELECT payload FROM customers WHERE id = ?').get(first.customer.id).payload);
+  const audit = store.db.prepare("SELECT after_summary FROM audit_events WHERE request_id = 'phone-enrichment'").get();
+
+  assert.equal(merged.decision, 'merge');
+  assert.equal(merged.customer.wechat, 'new_wechat');
+  assert.equal(merged.customer.notes, '新来源备注');
+  assert.equal(merged.customer.name, '原始姓名');
+  assert.deepEqual([merged.customer.ownerId, merged.customer.campusId, merged.customer.teamId], ['service-1', 'campus-a', 'team-a']);
+  assert.equal(stored.wechat, 'new_wechat');
+  assert.equal(stored.notes, '新来源备注');
+  assert.equal(stored.name, '原始姓名');
+  assert.deepEqual([stored.ownerId, stored.campusId, stored.teamId], ['service-1', 'campus-a', 'team-a']);
+  assert.deepEqual(JSON.parse(audit.after_summary).changedFields, ['notes', 'wechat']);
+  assert.doesNotMatch(audit.after_summary, /new_wechat|新来源备注/);
+  assert.equal(JSON.stringify(retried), JSON.stringify(merged));
+  assert.deepEqual(counts(store), [1, 2, 2, 0, 0, 0, 2, 2]);
+});
+
+test('failed audit rolls back an enrichment merge without partial customer changes', (t) => {
+  const { store, service } = fixture(t);
+  const first = service.importCustomer({ actor: admin, requestId: 'phone-only', customer: customerInput({ wechat: '', notes: '' }), source: { channel: 'demo', batch: 'batch-a' } });
+  const before = { payload: store.db.prepare('SELECT payload FROM customers WHERE id = ?').get(first.customer.id).payload, counts: counts(store) };
+  store.db.exec("CREATE TRIGGER reject_enrichment_audit BEFORE INSERT ON audit_events WHEN NEW.request_id = 'failed-enrichment' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END;");
+
+  assert.throws(() => service.importCustomer({ actor: admin, requestId: 'failed-enrichment', customer: customerInput({ wechat: 'new_wechat', notes: '新来源备注' }), source: { channel: 'manual', batch: 'batch-b' } }));
+  assert.equal(store.db.prepare('SELECT payload FROM customers WHERE id = ?').get(first.customer.id).payload, before.payload);
+  assert.deepEqual(counts(store), before.counts);
+});
+
 test('same request returns original bytes, including concurrent queued calls and changed input', async (t) => {
   const { store, service } = fixture(t);
   const first = imported(service);
@@ -93,6 +129,26 @@ test('strong identity conflict and weak last-four match demand review without pa
   assert.throws(() => imported(service, 'conflict', { phone: '13800000001', wechat: 'demo_two' }), { code: 'CUSTOMER_REVIEW_REQUIRED', details: { decision: 'review', reasons: ['STRONG_IDENTITY_CONFLICT'] } });
   assert.throws(() => imported(service, 'weak', { phone: '13700000003', wechat: 'demo_three', idLast4: '1234' }), { code: 'CUSTOMER_REVIEW_REQUIRED', details: { decision: 'review', reasons: ['ID_LAST4_MATCH'] } });
   assert.deepEqual(counts(store), before);
+});
+
+test('customer import derives canonical X ID suffixes and rejects conflicting explicit suffixes', (t) => {
+  const { store, service } = fixture(t);
+  const first = imported(service, 'id-x-first', {
+    phone: '', wechat: '', idNumber: '11010119900101123X', idLast4: ''
+  });
+  const stored = JSON.parse(store.db.prepare('SELECT payload FROM customers WHERE id = ?').get(first.customer.id).payload);
+  assert.equal(stored.idLast4, '123X');
+
+  const beforeReview = counts(store);
+  assert.throws(() => imported(service, 'id-x-review', {
+    phone: '', wechat: '', idNumber: '', idLast4: '123x'
+  }), (error) => error.code === 'CUSTOMER_REVIEW_REQUIRED' && error.details.reasons.includes('ID_LAST4_MATCH'));
+  assert.deepEqual(counts(store), beforeReview);
+
+  assert.throws(() => imported(service, 'id-x-conflict', {
+    phone: '', wechat: '', idNumber: '11010119900101123X', idLast4: '9999'
+  }), { code: 'INVALID_CUSTOMER' });
+  assert.deepEqual(counts(store), beforeReview);
 });
 
 test('customer masking follows the requesting actor and strips unrecognized secrets', (t) => {

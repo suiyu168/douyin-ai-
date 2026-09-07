@@ -94,6 +94,57 @@ test('masking returns an immutable shallow view by viewer privilege', () => {
   assert.equal(customer.phone, '13800138000');
 });
 
+test('finance-only masking returns only reconciliation identifiers and masked sensitive data', () => {
+  const fullCustomer = {
+    id: 'cust-finance-1',
+    name: 'Finance Fictional',
+    phone: '13800138000',
+    idNumber: 'ABCDEF1234',
+    campusId: 'campus-a',
+    teamId: 'team-a',
+    ownerId: 'u-1',
+    notes: 'do not disclose',
+    stage: 'negotiating',
+    wechat: 'private-wechat',
+    assignedTeacherId: 'teacher-1',
+    nextFollowUpAt: '2030-01-01T00:00:00.000Z',
+    arbitraryInternalField: 'not part of the finance contract',
+  };
+
+  assert.deepEqual(maskSensitiveCustomer(fullCustomer, actor(['finance'])), {
+    id: 'cust-finance-1',
+    name: 'Finance Fictional',
+    phone: '13800138000',
+    idNumber: '**************1234',
+    campusId: 'campus-a',
+    teamId: 'team-a',
+    ownerId: 'u-1',
+  });
+});
+
+test('admin and conversation-capable service-finance viewers retain their existing customer views', () => {
+  const fullCustomer = {
+    id: 'cust-union-1',
+    name: 'Union Fictional',
+    phone: '13800138000',
+    idNumber: 'ABCDEF1234',
+    campusId: 'campus-a',
+    teamId: 'team-a',
+    ownerId: 'u-1',
+    notes: 'service may see this',
+    stage: 'follow-up',
+    wechat: 'service-wechat',
+    assignedTeacherId: 'teacher-1',
+    nextFollowUpAt: '2030-01-01T00:00:00.000Z',
+  };
+  const serviceView = { ...fullCustomer, phone: '138****8000', idNumber: '**************1234' };
+  const serviceFinanceView = { ...fullCustomer, idNumber: '**************1234' };
+
+  assert.deepEqual(maskSensitiveCustomer(fullCustomer, actor(['admin'])), fullCustomer);
+  assert.deepEqual(maskSensitiveCustomer(fullCustomer, actor(['service'])), serviceView);
+  assert.deepEqual(maskSensitiveCustomer(fullCustomer, actor(['service', 'finance'])), serviceFinanceView);
+});
+
 test('masking preserves empty values and fully masks short/invalid values', () => {
   const view = maskSensitiveCustomer({ phone: '', idNumber: '12', campusId: 'campus-a', ownerId: 'u-1' }, actor(['service']));
   assert.equal(view.phone, '');

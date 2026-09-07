@@ -84,6 +84,17 @@ function maskSensitiveCustomer(customer, actor) {
     if (view.idNumber == null) view.idNumber = '';
     return view;
   }
+  if (actor.roles.includes('finance') && !can(actor, 'conversation.read', customer)) {
+    return {
+      id: customer.id,
+      name: customer.name,
+      phone: customer.phone ?? '',
+      idNumber: maskIdNumber(customer.idNumber ?? ''),
+      campusId: customer.campusId,
+      teamId: customer.teamId,
+      ownerId: customer.ownerId,
+    };
+  }
   view.phone = can(actor, 'customer.phone.read', customer) ? (customer.phone ?? '') : maskPhone(customer.phone ?? '');
   view.idNumber = maskIdNumber(customer.idNumber ?? '');
   return view;

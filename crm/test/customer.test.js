@@ -61,6 +61,17 @@ test('requests review when only ID last four digits match', () => {
   });
 });
 
+test('canonicalizes a Chinese ID suffix ending in X for fingerprinting and review', () => {
+  const { customerFingerprint, decideDuplicate } = require('../src/domain/customer');
+  const uppercase = customerFingerprint({ idLast4: '123X' }).idLast4Hash;
+  const lowercase = customerFingerprint({ idLast4: '123x' }).idLast4Hash;
+  assert.match(uppercase, /^[0-9a-f]{64}$/);
+  assert.equal(lowercase, uppercase);
+  assert.deepEqual(decideDuplicate({ idLast4: '123x' }, [{ customerId: 'cust-x', idLast4: '123X' }]), {
+    decision: 'review', customerId: 'cust-x', reasons: ['ID_LAST4_MATCH'],
+  });
+});
+
 test('creates a customer when nickname matches but strong identifiers differ', () => {
   const { decideDuplicate } = require('../src/domain/customer');
   const existing = [{ customerId: 'cust-4', phone: '13800138000', wechat: 'wx_alice', nickname: '小明' }];

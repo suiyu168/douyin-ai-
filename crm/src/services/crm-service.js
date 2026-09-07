@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 const { quoteOrder, appendLedgerEntry, summarizeOrder } = require('../domain/finance');
-const { normalizePhone, normalizeWechat, customerFingerprint, decideDuplicate } = require('../domain/customer');
+const { normalizePhone, normalizeWechat, normalizeIdLast4, customerFingerprint, decideDuplicate } = require('../domain/customer');
 const { ROLES, can, assertAllowed, maskSensitiveCustomer } = require('../domain/authorization');
 const { triageMessage } = require('../domain/ai-triage');
 
@@ -44,8 +44,11 @@ function customerPayload(input) {
   }
   result.phone = normalizePhone(result.phone); result.wechat = normalizeWechat(result.wechat);
   if (input.phone && !result.phone) fail('INVALID_CUSTOMER');
-  if (result.idLast4 && !/^\d{4}$/.test(result.idLast4)) fail('INVALID_CUSTOMER');
-  if (!result.idLast4 && /\d{4}$/.test(result.idNumber)) result.idLast4 = result.idNumber.slice(-4);
+  const explicitIdLast4 = normalizeIdLast4(result.idLast4);
+  if (result.idLast4 && !explicitIdLast4) fail('INVALID_CUSTOMER');
+  const derivedIdLast4 = normalizeIdLast4(result.idNumber.slice(-4));
+  if (explicitIdLast4 && derivedIdLast4 && explicitIdLast4 !== derivedIdLast4) fail('INVALID_CUSTOMER');
+  result.idLast4 = explicitIdLast4 || derivedIdLast4;
   if (result.nextFollowUpAt) result.nextFollowUpAt = date(result.nextFollowUpAt);
   return result;
 }
@@ -109,6 +112,16 @@ function createCrmService({ store, clock = () => new Date() }) {
       const decision = decideDuplicate(candidate, [...existing.values()]);
       if (decision.decision === 'review') fail('CUSTOMER_REVIEW_REQUIRED', { decision: 'review', reasons: decision.reasons });
       const saved = decision.decision === 'merge' ? loadCustomer(decision.customerId) : { ...candidate, id: crypto.randomUUID(), createdAt: timestamp };
+      const changedFields = [];
+      if (decision.decision === 'merge') {
+        for (const field of ['name', 'phone', 'wechat', 'idNumber', 'idLast4', 'assignedTeacherId', 'stage', 'nextFollowUpAt', 'notes']) {
+          if (!saved[field] && candidate[field]) {
+            saved[field] = candidate[field];
+            changedFields.push(field);
+          }
+        }
+        if (changedFields.length > 0) db.prepare('UPDATE customers SET payload = ? WHERE id = ?').run(JSON.stringify(saved), saved.id);
+      }
       if (decision.decision === 'create') db.prepare('INSERT INTO customers (id, payload) VALUES (?, ?)').run(saved.id, JSON.stringify(saved));
       for (const field of ['phone', 'wechat', 'idLast4']) {
         const hash = fingerprint[`${field}Hash`];
@@ -120,7 +133,7 @@ function createCrmService({ store, clock = () => new Date() }) {
       db.prepare('INSERT INTO customer_sources (id, customer_id, payload) VALUES (?, ?, ?)').run(sourceId, saved.id, JSON.stringify({ ...source, id: sourceId, customerId: saved.id, createdAt: timestamp }));
       return { customerId: saved.id, entityType: 'customer', entityId: saved.id,
         before: decision.decision === 'merge' ? { exists: true } : null,
-        after: { decision: decision.decision, sourceCount: db.prepare('SELECT count(*) AS n FROM customer_sources WHERE customer_id = ?').get(saved.id).n },
+        after: { decision: decision.decision, sourceCount: db.prepare('SELECT count(*) AS n FROM customer_sources WHERE customer_id = ?').get(saved.id).n, ...(decision.decision === 'merge' ? { changedFields: changedFields.sort() } : {}) },
         result: { decision: decision.decision, reasons: decision.reasons, customer: maskSensitiveCustomer(saved, actor), sourceId } };
     });
   }
