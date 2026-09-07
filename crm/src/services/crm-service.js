@@ -43,6 +43,7 @@ function customerPayload(input) {
     result[field] = string(input[field], 'INVALID_CUSTOMER', { required: ['name', 'ownerId', 'campusId', 'teamId'].includes(field), max: field === 'notes' ? 4000 : 200 });
   }
   result.phone = normalizePhone(result.phone); result.wechat = normalizeWechat(result.wechat);
+  result.idNumber = result.idNumber.replace(/x$/i, 'X');
   if (input.phone && !result.phone) fail('INVALID_CUSTOMER');
   const explicitIdLast4 = normalizeIdLast4(result.idLast4);
   if (result.idLast4 && !explicitIdLast4) fail('INVALID_CUSTOMER');

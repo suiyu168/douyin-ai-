@@ -177,6 +177,18 @@ test('merge keeps the full ID and suffix as one coherent identity', (t) => {
   assert.equal(stored.idLast4, '1234');
 });
 
+test('full ID comparison canonicalizes a terminal lowercase x', (t) => {
+  const { store, service } = fixture(t);
+  const first = imported(service, 'lowercase-full-id', { idNumber: '11010119900101123x', idLast4: '' });
+  const second = imported(service, 'uppercase-full-id', { idNumber: '11010119900101123X', idLast4: '' });
+  const stored = JSON.parse(store.db.prepare('SELECT payload FROM customers WHERE id = ?').get(first.customer.id).payload);
+
+  assert.equal(first.customer.id, second.customer.id);
+  assert.equal(second.decision, 'merge');
+  assert.equal(stored.idNumber, '11010119900101123X');
+  assert.equal(stored.idLast4, '123X');
+});
+
 test('customer masking follows the requesting actor and strips unrecognized secrets', (t) => {
   const { store, service } = fixture(t);
   const result = imported(service, 'masked', { idNumber: 'FICTIONAL-ID-1234', token: 'fake-token', cookie: 'fake-cookie', nested: { password: 'fake-pass' } }, serviceActor);
