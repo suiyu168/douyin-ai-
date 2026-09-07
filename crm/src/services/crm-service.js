@@ -3,7 +3,9 @@
 const crypto = require('node:crypto');
 const { quoteOrder, appendLedgerEntry, summarizeOrder } = require('../domain/finance');
 const { normalizePhone, normalizeWechat, normalizeIdLast4, customerFingerprint, decideDuplicate } = require('../domain/customer');
-const { ROLES, can, assertAllowed, maskSensitiveCustomer } = require('../domain/authorization');
+const { createEnrollmentApplication, decideEnrollmentApplication, createStudentRecord } = require('../domain/enrollment');
+const { createFollowUpTask, approvalTaskDueAt, taskView } = require('../domain/follow-up-task');
+const { ROLES, can, assertAllowed, maskSensitiveCustomer, maskModuleCustomerSummary } = require('../domain/authorization');
 const { triageMessage } = require('../domain/ai-triage');
 
 function fail(code, details) { const error = new Error(code); error.code = code; if (details) error.details = details; throw error; }
@@ -71,6 +73,11 @@ function createCrmService({ store, clock = () => new Date() }) {
   const { db } = store;
   const loadCustomer = id => {
     const row = db.prepare('SELECT payload FROM customers WHERE id = ?').get(string(id, 'INVALID_CUSTOMER', { required: true }));
+    if (!row) fail('NOT_FOUND');
+    return JSON.parse(row.payload);
+  };
+  const loadEnrollment = id => {
+    const row = db.prepare('SELECT payload FROM enrollment_applications WHERE id = ?').get(string(id, 'INVALID_ENROLLMENT', { required: true }));
     if (!row) fail('NOT_FOUND');
     return JSON.parse(row.payload);
   };
@@ -154,20 +161,24 @@ function createCrmService({ store, clock = () => new Date() }) {
         result: { decision: decision.decision, reasons: decision.reasons, customer: maskSensitiveCustomer(saved, actor), sourceId } };
     });
   }
-  function readContext(input) {
+  function scopedReadContext(input, action) {
     record(input, 'INVALID_REQUEST');
     const actor = actorSnapshot(input.actor);
-    const scope = input.scope === undefined ? {} : record(input.scope, 'INVALID_SCOPE');
-    for (const [key, value] of Object.entries(scope)) {
+    const rawScope = input.scope === undefined ? {} : record(input.scope, 'INVALID_SCOPE');
+    const scope = {};
+    for (const [key, value] of Object.entries(rawScope)) {
       if (!['campusId', 'teamId', 'ownerId'].includes(key)) fail('INVALID_SCOPE');
-      string(value, 'INVALID_SCOPE', { required: true });
+      scope[key] = string(value, 'INVALID_SCOPE', { required: true });
     }
     const campuses = scope.campusId ? [scope.campusId] : actor.campusIds.length ? actor.campusIds : [''];
     const teams = scope.teamId ? [scope.teamId] : actor.teamIds.length ? actor.teamIds : [''];
-    const permitted = campuses.some(campusId => teams.some(teamId => can(actor, 'customer.read', { campusId, teamId, ownerId: scope.ownerId || actor.id })));
+    const permitted = campuses.some(campusId => teams.some(teamId => can(actor, action, {
+      campusId, teamId, ownerId: scope.ownerId || actor.id, assignedTeacherId: actor.id,
+    })));
     if (!permitted) fail('FORBIDDEN');
     return { actor, scope };
   }
+  const readContext = input => scopedReadContext(input, 'customer.read');
   function visibleCustomers(actor, scope) {
     return db.prepare('SELECT payload FROM customers ORDER BY id').all().map(row => JSON.parse(row.payload))
       .filter(customer => Object.entries(scope).every(([key, value]) => customer[key] === value) && can(actor, 'customer.read', customer));
@@ -175,6 +186,82 @@ function createCrmService({ store, clock = () => new Date() }) {
   function listCustomers(input) {
     const { actor, scope } = readContext(input);
     return { customers: visibleCustomers(actor, scope).map(customer => maskSensitiveCustomer(customer, actor)) };
+  }
+  function submitEnrollment(input) {
+    return write(input, 'enrollment.submit', ['enrollment.submit'], (actor, timestamp) => {
+      const customer = loadCustomer(input.customerId);
+      assertAllowed(actor, 'enrollment.submit', customer);
+      if (db.prepare('SELECT 1 FROM students WHERE customer_id = ?').get(customer.id)) fail('STUDENT_EXISTS');
+      if (db.prepare("SELECT 1 FROM enrollment_applications WHERE customer_id = ? AND status = 'pending'").get(customer.id)) fail('ENROLLMENT_PENDING');
+      const enrollment = createEnrollmentApplication({
+        id: crypto.randomUUID(), customerId: customer.id, submittedBy: actor.id, submittedAt: timestamp, input: input.enrollment,
+      });
+      db.prepare(`INSERT INTO enrollment_applications
+        (id, customer_id, status, submitted_by, submitted_at, decided_by, decided_at, payload)
+        VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)`)
+        .run(enrollment.id, customer.id, enrollment.status, enrollment.submittedBy, enrollment.submittedAt, JSON.stringify(enrollment));
+      return { customerId: customer.id, entityType: 'enrollment', entityId: enrollment.id,
+        after: { status: 'pending' }, result: { enrollment } };
+    });
+  }
+  function decideEnrollment(input) {
+    return write(input, 'enrollment.decide', ['enrollment.decide'], (actor, timestamp) => {
+      const enrollment = loadEnrollment(input.enrollmentId);
+      const customer = loadCustomer(enrollment.customerId);
+      assertAllowed(actor, 'enrollment.decide', customer);
+      const decided = decideEnrollmentApplication(enrollment, input.decision, actor.id, timestamp);
+      if (decided.status === 'approved' && db.prepare('SELECT 1 FROM students WHERE customer_id = ?').get(customer.id)) fail('STUDENT_EXISTS');
+      const update = db.prepare(`UPDATE enrollment_applications
+        SET status = ?, decided_by = ?, decided_at = ?, payload = ?
+        WHERE id = ? AND status = 'pending'`)
+        .run(decided.status, decided.decidedBy, decided.decidedAt, JSON.stringify(decided), decided.id);
+      if (Number(update.changes) !== 1) fail('ENROLLMENT_ALREADY_DECIDED');
+
+      let student = null;
+      let task = null;
+      if (decided.status === 'approved') {
+        student = createStudentRecord({ id: crypto.randomUUID(), customerId: customer.id, enrollmentId: decided.id, createdAt: timestamp });
+        db.prepare('INSERT INTO students (id, customer_id, enrollment_id, created_at, payload) VALUES (?, ?, ?, ?, ?)')
+          .run(student.id, student.customerId, student.enrollmentId, student.createdAt, JSON.stringify(student));
+        const savedTask = createFollowUpTask({
+          id: crypto.randomUUID(), customerId: customer.id, studentId: student.id,
+          originType: 'enrollment_approval', originId: decided.id, ownerId: customer.ownerId,
+          title: '完成报名交接', dueAt: approvalTaskDueAt(timestamp),
+        });
+        db.prepare(`INSERT INTO follow_up_tasks
+          (id, customer_id, student_id, origin_type, origin_id, owner_id, due_at, status, payload)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(savedTask.id, savedTask.customerId, savedTask.studentId, savedTask.originType, savedTask.originId,
+            savedTask.ownerId, savedTask.dueAt, savedTask.status, JSON.stringify(savedTask));
+        task = taskView(savedTask, timestamp);
+      }
+      return { customerId: customer.id, entityType: 'enrollment', entityId: decided.id,
+        before: { status: enrollment.status },
+        after: { status: decided.status, studentCreated: student !== null, taskCreated: task !== null },
+        result: { enrollment: decided, student, task } };
+    });
+  }
+  function listEnrollments(input) {
+    const { actor, scope } = scopedReadContext(input, 'enrollment.read');
+    const enrollments = db.prepare('SELECT payload FROM enrollment_applications ORDER BY submitted_at, id').all()
+      .map(row => JSON.parse(row.payload))
+      .flatMap(enrollment => {
+        const customer = loadCustomer(enrollment.customerId);
+        if (!Object.entries(scope).every(([key, value]) => customer[key] === value) || !can(actor, 'enrollment.read', customer)) return [];
+        return [{ ...enrollment, customer: maskModuleCustomerSummary(customer, actor, 'enrollment.read') }];
+      });
+    return { enrollments };
+  }
+  function listStudents(input) {
+    const { actor, scope } = scopedReadContext(input, 'student.read');
+    const students = db.prepare('SELECT payload FROM students ORDER BY created_at, id').all()
+      .map(row => JSON.parse(row.payload))
+      .flatMap(student => {
+        const customer = loadCustomer(student.customerId);
+        if (!Object.entries(scope).every(([key, value]) => customer[key] === value) || !can(actor, 'student.read', customer)) return [];
+        return [{ ...student, customer: maskModuleCustomerSummary(customer, actor, 'student.read') }];
+      });
+    return { students };
   }
   function loadOrder(id) {
     const row = db.prepare('SELECT payload FROM orders WHERE id = ?').get(string(id, 'INVALID_ORDER', { required: true }));
@@ -258,7 +345,10 @@ function createCrmService({ store, clock = () => new Date() }) {
     }
     return { customerCount: customers.length, metrics, pendingHumanCount: pendingConversationIds.length, pendingConversationIds };
   }
-  return { importCustomer, listCustomers, createOrder, appendPayment, triageConversation, dashboard };
+  return {
+    importCustomer, listCustomers, submitEnrollment, decideEnrollment, listEnrollments, listStudents,
+    createOrder, appendPayment, triageConversation, dashboard,
+  };
 }
 
 module.exports = { createCrmService };

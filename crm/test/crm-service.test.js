@@ -11,10 +11,10 @@ const { createStore } = require('../src/storage/sqlite-store');
 const { createCrmService } = require('../src/services/crm-service');
 
 // Public service contract: synchronous JSON-safe object arguments/results.
-// Writes: { actor, requestId, customer|order|entry|conversation, source?, customerId?, orderId? }.
+// Writes: { actor, requestId, customer|order|entry|conversation|enrollment|decision, source?, customerId?, orderId?, enrollmentId? }.
 // Reads: { actor, scope?: { campusId?, teamId?, ownerId? } }.
 // Import -> { decision, reasons, customer, sourceId }; order/payment -> { order, summary };
-// triage -> { conversation }; list -> { customers };
+// triage -> { conversation }; enrollment decision -> { enrollment, student, task }; lists -> { customers|enrollments|students };
 // dashboard -> { customerCount, metrics, pendingHumanCount, pendingConversationIds }.
 // Review is a CUSTOMER_REVIEW_REQUIRED error with safe decision/reasons, no mutation.
 // Actor objects are trusted server-resolved identities, never browser-supplied roles.
@@ -27,6 +27,8 @@ const imported = (service, requestId = 'import-1', extra = {}, actor = admin) =>
 const quoted = (service, customerId, requestId = 'order-1', extra = {}, actor = admin) => service.createOrder({ actor, requestId, customerId, order: { listPriceCents: 1_000_000, discountCents: 50_000, discountApproved: true, dueAt: '2026-09-01', ...extra } });
 const paid = (service, orderId, requestId = 'payment-1', extra = {}, actor = admin) => service.appendPayment({ actor, requestId, orderId, entry: { type: 'payment', idempotencyKey: requestId, amountCents: 300_000, status: 'confirmed', occurredAt: '2026-09-04', ...extra } });
 const triaged = (service, customerId, requestId = 'triage-1', extra = {}, actor = admin) => service.triageConversation({ actor, requestId, customerId, conversation: { message: '报名需要哪些材料', confidence: 0.9, citations: [], ...extra } });
+const enrollmentInput = (extra = {}) => ({ currentEducation: '高中', targetLevel: '本科', school: '虚构大学', major: '计算机', classType: '周末班', ...extra });
+const submittedEnrollment = (service, customerId, requestId = 'submit-1', extra = {}, actor = admin) => service.submitEnrollment({ actor, requestId, customerId, enrollment: enrollmentInput(extra) });
 const activeCitation = (id = 'knowledge-v1') => ({ id, status: 'published', reviewStatus: 'approved', effectiveAt: '2026-08-01', expiresAt: '2026-10-01', text: 'fictional knowledge' });
 function fixture(t) {
   const store = createStore(':memory:');
@@ -35,6 +37,11 @@ function fixture(t) {
 }
 function counts(store) {
   return ['customers', 'customer_sources', 'customer_identities', 'orders', 'ledger_entries', 'conversations', 'audit_events', 'request_results'].map(table => Number(store.db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n));
+}
+
+function workflowCounts(store) {
+  return ['enrollment_applications', 'students', 'follow_up_tasks', 'audit_events', 'request_results']
+    .map(table => Number(store.db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n));
 }
 
 test('file-backed customer and order survive repeat migrations and reopen', (t) => {
@@ -623,4 +630,277 @@ test('parallel independent SQLite connections commit one copy of a shared reques
   const responses = await Promise.all(results);
   assert.equal(new Set(responses.map(result => JSON.stringify(result))).size, 1);
   assert.deepEqual(counts(store), [1, 1, 2, 0, 0, 0, 1, 1]);
+});
+
+test('scoped approval atomically creates one student and first task', (t) => {
+  const { store, service } = fixture(t);
+  const consultant = { id: 'consultant-1', roles: ['consultant'], campusIds: ['campus-a'], teamIds: [] };
+  const supervisor = { id: 'supervisor-1', roles: ['supervisor'], campusIds: ['campus-a'], teamIds: ['team-a'] };
+  const customerId = imported(service, 'enrollment-customer', { ownerId: 'consultant-1', assignedTeacherId: 'teacher-1' }).customer.id;
+  const submitted = service.submitEnrollment({ actor: consultant, requestId: 'submit-1', customerId, enrollment: enrollmentInput() });
+  const approved = service.decideEnrollment({ actor: supervisor, requestId: 'approve-1', enrollmentId: submitted.enrollment.id, decision: { status: 'approved' } });
+
+  assert.equal(approved.enrollment.status, 'approved');
+  assert.equal(approved.student.customerId, customerId);
+  assert.deepEqual(approved.task, {
+    id: approved.task.id, customerId, studentId: approved.student.id, originType: 'enrollment_approval', originId: submitted.enrollment.id,
+    ownerId: 'consultant-1', title: '完成报名交接', dueAt: '2026-09-06T00:00:00.000Z', status: 'open', overdue: false,
+  });
+  assert.equal(store.db.prepare('SELECT count(*) AS n FROM students').get().n, 1);
+  assert.equal(store.db.prepare('SELECT count(*) AS n FROM follow_up_tasks').get().n, 1);
+});
+
+test('enrollment submission requires consultant ownership and campus scope', (t) => {
+  const { store, service } = fixture(t);
+  const consultant = { id: 'consultant-1', roles: ['consultant'], campusIds: ['campus-a'], teamIds: [] };
+  const own = imported(service, 'own-enrollment-customer', { ownerId: consultant.id }).customer.id;
+  const other = imported(service, 'other-enrollment-customer', { phone: '13900000002', wechat: 'other', ownerId: 'consultant-2' }).customer.id;
+  const otherCampus = imported(service, 'campus-enrollment-customer', { phone: '13900000003', wechat: 'campus', ownerId: consultant.id, campusId: 'campus-b' }).customer.id;
+  assert.equal(submittedEnrollment(service, own, 'own-submit', {}, consultant).enrollment.submittedBy, consultant.id);
+  const before = workflowCounts(store);
+  for (const customerId of [other, otherCampus]) assert.throws(() => submittedEnrollment(service, customerId, `forbidden-${customerId}`, {}, consultant), { code: 'FORBIDDEN' });
+  assert.deepEqual(workflowCounts(store), before);
+});
+
+test('enrollment approval requires supervisor campus and team scope', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'supervisor-scope-customer', { ownerId: 'consultant-1' }).customer.id;
+  const enrollmentId = submittedEnrollment(service, customerId).enrollment.id;
+  const before = workflowCounts(store);
+  for (const actor of [
+    { id: 'supervisor-1', roles: ['supervisor'], campusIds: ['campus-b'], teamIds: ['team-a'] },
+    { id: 'supervisor-1', roles: ['supervisor'], campusIds: ['campus-a'], teamIds: ['team-b'] },
+  ]) assert.throws(() => service.decideEnrollment({ actor, requestId: `scope-${actor.campusIds[0]}-${actor.teamIds[0]}`, enrollmentId, decision: { status: 'approved' } }), { code: 'FORBIDDEN' });
+  assert.deepEqual(workflowCounts(store), before);
+});
+
+test('admin has global enrollment decision and read access', (t) => {
+  const { service } = fixture(t);
+  const customerId = imported(service, 'remote-enrollment-customer', { campusId: 'campus-z', teamId: 'team-z', ownerId: 'consultant-z' }).customer.id;
+  const enrollmentId = submittedEnrollment(service, customerId, 'admin-submit').enrollment.id;
+  const approved = service.decideEnrollment({ actor: admin, requestId: 'admin-approve', enrollmentId, decision: { status: 'approved' } });
+  assert.equal(approved.enrollment.status, 'approved');
+  assert.equal(service.listEnrollments({ actor: admin, scope: { campusId: 'campus-z' } }).enrollments.length, 1);
+  assert.equal(service.listStudents({ actor: admin, scope: { teamId: 'team-z' } }).students.length, 1);
+});
+
+test('service teacher and finance actors cannot submit or decide enrollments', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'denied-enrollment-customer', { ownerId: 'service-1', assignedTeacherId: 'teacher-1' }).customer.id;
+  const enrollmentId = submittedEnrollment(service, customerId, 'admin-enrollment').enrollment.id;
+  const actors = [serviceActor, { id: 'teacher-1', roles: ['teacher'], campusIds: ['campus-a'], teamIds: [] }, financeActor];
+  const before = workflowCounts(store);
+  for (const actor of actors) {
+    assert.throws(() => submittedEnrollment(service, customerId, `submit-${actor.id}`, {}, actor), { code: 'FORBIDDEN' });
+    assert.throws(() => service.decideEnrollment({ actor, requestId: `decide-${actor.id}`, enrollmentId, decision: { status: 'approved' } }), { code: 'FORBIDDEN' });
+  }
+  assert.deepEqual(workflowCounts(store), before);
+});
+
+test('one pending enrollment is allowed per customer', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'pending-enrollment-customer').customer.id;
+  submittedEnrollment(service, customerId, 'pending-first');
+  const before = workflowCounts(store);
+  assert.throws(() => submittedEnrollment(service, customerId, 'pending-second'), { code: 'ENROLLMENT_PENDING' });
+  assert.deepEqual(workflowCounts(store), before);
+});
+
+test('enrollment rejection requires a reason and permits resubmission', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'rejected-enrollment-customer').customer.id;
+  const first = submittedEnrollment(service, customerId, 'rejected-first').enrollment;
+  const beforeInvalid = workflowCounts(store);
+  for (const decision of [{ status: 'rejected' }, { status: 'rejected', reason: ' ' }, { status: 'approved', reason: '不应存在' }]) {
+    assert.throws(() => service.decideEnrollment({ actor: admin, requestId: `invalid-reject-${JSON.stringify(decision)}`, enrollmentId: first.id, decision }), { code: 'INVALID_ENROLLMENT_DECISION' });
+  }
+  assert.deepEqual(workflowCounts(store), beforeInvalid);
+  const rejected = service.decideEnrollment({ actor: admin, requestId: 'reject-valid', enrollmentId: first.id, decision: { status: 'rejected', reason: ' 信息不完整 ' } });
+  assert.equal(rejected.enrollment.rejectionReason, '信息不完整');
+  assert.equal(rejected.student, null);
+  assert.equal(rejected.task, null);
+  const second = submittedEnrollment(service, customerId, 'resubmit-after-rejection').enrollment;
+  assert.notEqual(second.id, first.id);
+  assert.equal(second.status, 'pending');
+});
+
+test('approved customers reject further enrollment and decided applications reject another decision', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'existing-student-customer').customer.id;
+  const enrollmentId = submittedEnrollment(service, customerId).enrollment.id;
+  service.decideEnrollment({ actor: admin, requestId: 'first-approval', enrollmentId, decision: { status: 'approved' } });
+  const before = workflowCounts(store);
+  assert.throws(() => submittedEnrollment(service, customerId, 'submit-with-student'), { code: 'STUDENT_EXISTS' });
+  assert.throws(() => service.decideEnrollment({ actor: admin, requestId: 'second-approval', enrollmentId, decision: { status: 'approved' } }), { code: 'ENROLLMENT_ALREADY_DECIDED' });
+  assert.deepEqual(workflowCounts(store), before);
+});
+
+test('enrollment workflow uses server IDs and timestamps and student copies no customer PII', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'server-enrollment-fields', { name: '不可复制姓名', phone: '13900000009', wechat: 'private-wechat', idNumber: 'FICTIONAL-ID-9009', notes: 'private-notes' }).customer.id;
+  const submitted = submittedEnrollment(service, customerId, 'server-submit', { id: 'caller-enrollment', status: 'approved', submittedBy: 'caller', submittedAt: '1999-01-01T00:00:00.000Z' }).enrollment;
+  assert.notEqual(submitted.id, 'caller-enrollment');
+  assert.equal(submitted.status, 'pending');
+  assert.equal(submitted.submittedBy, 'admin-1');
+  assert.equal(submitted.submittedAt, '2026-09-05T00:00:00.000Z');
+  const approved = service.decideEnrollment({ actor: admin, requestId: 'server-approve', enrollmentId: submitted.id, decision: { status: 'approved', id: 'caller-student', decidedBy: 'caller', decidedAt: '1999-01-01T00:00:00.000Z' } });
+  assert.notEqual(approved.student.id, 'caller-student');
+  assert.equal(approved.student.createdAt, '2026-09-05T00:00:00.000Z');
+  assert.equal(approved.enrollment.decidedBy, 'admin-1');
+  assert.equal(approved.enrollment.decidedAt, '2026-09-05T00:00:00.000Z');
+  const studentPayload = store.db.prepare('SELECT payload FROM students WHERE id = ?').get(approved.student.id).payload;
+  assert.deepEqual(Object.keys(JSON.parse(studentPayload)).sort(), ['createdAt', 'customerId', 'enrollmentId', 'id', 'status']);
+  assert.doesNotMatch(studentPayload, /不可复制姓名|13900000009|private-wechat|FICTIONAL-ID-9009|private-notes/);
+});
+
+test('enrollment submission and approval replay their original byte-equivalent results', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'replayed-enrollment-customer').customer.id;
+  const firstSubmit = submittedEnrollment(service, customerId, 'replayed-submit');
+  const replayedSubmit = submittedEnrollment(service, customerId, 'replayed-submit', { school: '已更改' });
+  assert.equal(JSON.stringify(replayedSubmit), JSON.stringify(firstSubmit));
+  const firstApproval = service.decideEnrollment({ actor: admin, requestId: 'replayed-approval', enrollmentId: firstSubmit.enrollment.id, decision: { status: 'approved' } });
+  const replayedApproval = service.decideEnrollment({ actor: admin, requestId: 'replayed-approval', enrollmentId: 'changed-id', decision: { status: 'rejected', reason: '已更改' } });
+  assert.equal(JSON.stringify(replayedApproval), JSON.stringify(firstApproval));
+  assert.deepEqual(workflowCounts(store), [1, 1, 1, 3, 3]);
+});
+
+test('enrollment request replay rejects cross-actor and downgraded identities', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'protected-replay-customer').customer.id;
+  const enrollmentId = submittedEnrollment(service, customerId, 'protected-submit').enrollment.id;
+  const before = workflowCounts(store);
+  for (const actor of [
+    { id: 'other-admin', roles: ['admin'], campusIds: [], teamIds: [] },
+    { ...admin, roles: ['finance'], campusIds: ['campus-a'], teamIds: [] },
+  ]) assert.throws(() => submittedEnrollment(service, customerId, 'protected-submit', {}, actor), { code: 'FORBIDDEN' });
+  service.decideEnrollment({ actor: admin, requestId: 'protected-approval', enrollmentId, decision: { status: 'approved' } });
+  const afterApproval = workflowCounts(store);
+  for (const actor of [
+    { id: 'other-admin', roles: ['admin'], campusIds: [], teamIds: [] },
+    { ...admin, roles: ['finance'], campusIds: ['campus-a'], teamIds: [] },
+  ]) assert.throws(() => service.decideEnrollment({ actor, requestId: 'protected-approval', enrollmentId, decision: { status: 'approved' } }), { code: 'FORBIDDEN' });
+  assert.deepEqual(before.slice(0, 3), [1, 0, 0]);
+  assert.deepEqual(workflowCounts(store), afterApproval);
+});
+
+test('generated enrollment student task and audit ID collisions roll back atomically', (t) => {
+  const { store, service } = fixture(t);
+  const firstCustomerId = imported(service, 'collision-first-customer').customer.id;
+  const firstEnrollment = submittedEnrollment(service, firstCustomerId, 'collision-first-submit').enrollment;
+  const firstApproval = service.decideEnrollment({ actor: admin, requestId: 'collision-first-approval', enrollmentId: firstEnrollment.id, decision: { status: 'approved' } });
+  const existingAuditId = store.db.prepare("SELECT id FROM audit_events WHERE request_id = 'collision-first-approval'").get().id;
+
+  const submissionCustomerId = imported(service, 'collision-submit-customer', { phone: '13900000002', wechat: 'collision-submit' }).customer.id;
+  let before = workflowCounts(store);
+  let mock = t.mock.method(crypto, 'randomUUID', () => firstEnrollment.id);
+  try { assert.throws(() => submittedEnrollment(service, submissionCustomerId, 'collision-submit'), { code: 'ID_CONFLICT' }); }
+  finally { mock.mock.restore(); }
+  assert.deepEqual(workflowCounts(store), before);
+
+  const approvalCustomerId = imported(service, 'collision-approval-customer', { phone: '13900000003', wechat: 'collision-approval' }).customer.id;
+  const pendingId = submittedEnrollment(service, approvalCustomerId, 'collision-approval-submit').enrollment.id;
+  before = workflowCounts(store);
+  for (const [position, collision] of [[0, firstApproval.student.id], [1, firstApproval.task.id], [2, existingAuditId]]) {
+    const generated = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+    generated[position] = collision;
+    mock = t.mock.method(crypto, 'randomUUID', () => generated.shift());
+    try { assert.throws(() => service.decideEnrollment({ actor: admin, requestId: `collision-approval-${position}`, enrollmentId: pendingId, decision: { status: 'approved' } }), { code: 'ID_CONFLICT' }); }
+    finally { mock.mock.restore(); }
+    assert.equal(store.db.prepare('SELECT status FROM enrollment_applications WHERE id = ?').get(pendingId).status, 'pending');
+    assert.deepEqual(workflowCounts(store), before);
+  }
+});
+
+test('approval audit and request-result failures roll back enrollment student and task', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'approval-trigger-customer').customer.id;
+  const enrollmentId = submittedEnrollment(service, customerId, 'approval-trigger-submit').enrollment.id;
+  for (const table of ['audit_events', 'request_results']) {
+    const before = workflowCounts(store);
+    store.db.exec(`CREATE TRIGGER reject_enrollment_write BEFORE INSERT ON ${table} BEGIN SELECT RAISE(ABORT, 'storage unavailable'); END;`);
+    assert.throws(() => service.decideEnrollment({ actor: admin, requestId: `approval-trigger-${table}`, enrollmentId, decision: { status: 'approved' } }));
+    assert.equal(store.db.prepare('SELECT status FROM enrollment_applications WHERE id = ?').get(enrollmentId).status, 'pending');
+    assert.deepEqual(workflowCounts(store), before);
+    store.db.exec('DROP TRIGGER reject_enrollment_write');
+  }
+  assert.equal(service.decideEnrollment({ actor: admin, requestId: 'approval-after-trigger', enrollmentId, decision: { status: 'approved' } }).student.status, 'active');
+});
+
+test('enrollment audit summaries exclude application reasons and customer PII', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'safe-enrollment-audit-customer', { name: 'SECRET-CUSTOMER-NAME', phone: '13900000009', idNumber: 'SECRET-ID-9009' }).customer.id;
+  const rejectedId = submittedEnrollment(service, customerId, 'safe-audit-submit-one', { school: 'SECRET-SCHOOL', major: 'SECRET-MAJOR' }).enrollment.id;
+  service.decideEnrollment({ actor: admin, requestId: 'safe-audit-reject', enrollmentId: rejectedId, decision: { status: 'rejected', reason: 'SECRET-REASON' } });
+  const approvedId = submittedEnrollment(service, customerId, 'safe-audit-submit-two', { school: 'SECRET-SCHOOL', major: 'SECRET-MAJOR' }).enrollment.id;
+  service.decideEnrollment({ actor: admin, requestId: 'safe-audit-approve', enrollmentId: approvedId, decision: { status: 'approved' } });
+  const audits = store.db.prepare("SELECT action, before_summary, after_summary FROM audit_events WHERE action LIKE 'enrollment.%' ORDER BY rowid").all();
+  assert.deepEqual(audits.map(row => row.action), ['enrollment.submit', 'enrollment.decide', 'enrollment.submit', 'enrollment.decide']);
+  assert.deepEqual(JSON.parse(audits[1].after_summary), { status: 'rejected', studentCreated: false, taskCreated: false });
+  assert.deepEqual(JSON.parse(audits[3].after_summary), { status: 'approved', studentCreated: true, taskCreated: true });
+  assert.doesNotMatch(JSON.stringify(audits), /SECRET-SCHOOL|SECRET-MAJOR|SECRET-REASON|SECRET-CUSTOMER-NAME|13900000009|SECRET-ID-9009/);
+});
+
+test('enrollment and student lists apply module authorization masking scope and stable ordering', (t) => {
+  const { service } = fixture(t);
+  const consultant = { id: 'consultant-1', roles: ['consultant'], campusIds: ['campus-a'], teamIds: [] };
+  const supervisor = { id: 'supervisor-1', roles: ['supervisor'], campusIds: ['campus-a'], teamIds: ['team-a'] };
+  const teacher = { id: 'teacher-1', roles: ['teacher'], campusIds: ['campus-a'], teamIds: [] };
+  const firstCustomer = imported(service, 'list-first-customer', { name: '列表客户一', ownerId: consultant.id, assignedTeacherId: teacher.id }).customer;
+  const secondCustomer = imported(service, 'list-second-customer', { name: '列表客户二', phone: '13900000002', wechat: 'list-two', ownerId: consultant.id, assignedTeacherId: teacher.id }).customer;
+  const hiddenCustomer = imported(service, 'list-hidden-customer', { name: '隐藏客户', phone: '13900000003', wechat: 'list-hidden', campusId: 'campus-b', teamId: 'team-b', ownerId: 'consultant-b', assignedTeacherId: 'teacher-b' }).customer;
+  const secondEnrollment = submittedEnrollment(service, secondCustomer.id, 'list-submit-second', {}, consultant).enrollment;
+  const firstEnrollment = submittedEnrollment(service, firstCustomer.id, 'list-submit-first', {}, consultant).enrollment;
+  const hiddenEnrollment = submittedEnrollment(service, hiddenCustomer.id, 'list-submit-hidden').enrollment;
+  const firstStudent = service.decideEnrollment({ actor: supervisor, requestId: 'list-approve-first', enrollmentId: firstEnrollment.id, decision: { status: 'approved' } }).student;
+  const secondStudent = service.decideEnrollment({ actor: supervisor, requestId: 'list-approve-second', enrollmentId: secondEnrollment.id, decision: { status: 'approved' } }).student;
+  service.decideEnrollment({ actor: admin, requestId: 'list-approve-hidden', enrollmentId: hiddenEnrollment.id, decision: { status: 'approved' } });
+
+  const enrollments = service.listEnrollments({ actor: supervisor }).enrollments;
+  assert.deepEqual(enrollments.map(item => item.id), [firstEnrollment.id, secondEnrollment.id].sort());
+  assert.deepEqual(enrollments[0].customer, {
+    id: enrollments[0].customerId, name: enrollments[0].customerId === firstCustomer.id ? '列表客户一' : '列表客户二',
+    maskedPhone: enrollments[0].customerId === firstCustomer.id ? '138****0001' : '139****0002', campusId: 'campus-a', teamId: 'team-a', assignedTeacherId: 'teacher-1',
+  });
+  assert.equal(service.listEnrollments({ actor: consultant, scope: { ownerId: consultant.id } }).enrollments.length, 2);
+  assert.throws(() => service.listEnrollments({ actor: consultant, scope: { campusId: 'campus-b' } }), { code: 'FORBIDDEN' });
+  assert.throws(() => service.listEnrollments({ actor: teacher }), { code: 'FORBIDDEN' });
+
+  const students = service.listStudents({ actor: teacher }).students;
+  assert.deepEqual(students.map(item => item.id), [firstStudent.id, secondStudent.id].sort());
+  assert.ok(students.every(item => item.customer.maskedPhone.includes('****')));
+  assert.ok(students.every(item => !Object.hasOwn(item.customer, 'idNumber') && !Object.hasOwn(item.customer, 'wechat') && !Object.hasOwn(item.customer, 'notes')));
+  assert.throws(() => service.listStudents({ actor: financeActor }), { code: 'FORBIDDEN' });
+  assert.equal(service.listStudents({ actor: admin, scope: { campusId: 'campus-b' } }).students.length, 1);
+  assert.throws(() => service.listStudents({ actor: supervisor, scope: { teamId: 'team-b' } }), { code: 'FORBIDDEN' });
+});
+
+test('file-backed rejected resubmitted and approved enrollment survives reopen byte-equivalently', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'crm-enrollment-reopen-'));
+  const path = join(dir, 'crm.sqlite');
+  let store = createStore(path);
+  t.after(() => { store?.close(); rmSync(dir, { recursive: true, force: true }); });
+  let service = createCrmService({ store, clock });
+  const customerId = imported(service, 'restart-enrollment-customer').customer.id;
+  const rejectedId = submittedEnrollment(service, customerId, 'restart-submit-one').enrollment.id;
+  service.decideEnrollment({ actor: admin, requestId: 'restart-reject', enrollmentId: rejectedId, decision: { status: 'rejected', reason: '信息不完整' } });
+  const approvedId = submittedEnrollment(service, customerId, 'restart-submit-two').enrollment.id;
+  const approved = service.decideEnrollment({ actor: admin, requestId: 'restart-approve', enrollmentId: approvedId, decision: { status: 'approved' } });
+  const before = {
+    enrollments: JSON.stringify(service.listEnrollments({ actor: admin })),
+    students: JSON.stringify(service.listStudents({ actor: admin })),
+    rows: store.db.prepare('SELECT id, status, payload FROM enrollment_applications ORDER BY submitted_at, id').all(),
+    student: store.db.prepare('SELECT id, payload FROM students').get(),
+    task: store.db.prepare('SELECT id, status, payload FROM follow_up_tasks').get(),
+  };
+  assert.equal(before.student.id, approved.student.id);
+  assert.equal(before.task.id, approved.task.id);
+  store.close();
+  store = createStore(path);
+  service = createCrmService({ store, clock });
+  assert.equal(JSON.stringify(service.listEnrollments({ actor: admin })), before.enrollments);
+  assert.equal(JSON.stringify(service.listStudents({ actor: admin })), before.students);
+  assert.deepEqual(store.db.prepare('SELECT id, status, payload FROM enrollment_applications ORDER BY submitted_at, id').all(), before.rows);
+  assert.deepEqual(store.db.prepare('SELECT id, payload FROM students').get(), before.student);
+  assert.deepEqual(store.db.prepare('SELECT id, status, payload FROM follow_up_tasks').get(), before.task);
 });
