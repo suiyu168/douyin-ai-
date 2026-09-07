@@ -151,6 +151,32 @@ test('customer import derives canonical X ID suffixes and rejects conflicting ex
   assert.deepEqual(counts(store), beforeReview);
 });
 
+test('merge keeps the full ID and suffix as one coherent identity', (t) => {
+  const { store, service } = fixture(t);
+  const first = imported(service, 'suffix-only', { idNumber: '', idLast4: '1234' });
+  const beforeConflict = {
+    payload: store.db.prepare('SELECT payload FROM customers WHERE id = ?').get(first.customer.id).payload,
+    counts: counts(store),
+  };
+
+  assert.throws(() => imported(service, 'conflicting-full-id', {
+    idNumber: '110101199001015678', idLast4: '5678'
+  }), {
+    code: 'CUSTOMER_REVIEW_REQUIRED',
+    details: { decision: 'review', reasons: ['IDENTITY_FIELD_CONFLICT'] },
+  });
+  assert.equal(store.db.prepare('SELECT payload FROM customers WHERE id = ?').get(first.customer.id).payload, beforeConflict.payload);
+  assert.deepEqual(counts(store), beforeConflict.counts);
+
+  const compatible = imported(service, 'compatible-full-id', {
+    idNumber: '110101199001011234', idLast4: '1234'
+  });
+  const stored = JSON.parse(store.db.prepare('SELECT payload FROM customers WHERE id = ?').get(first.customer.id).payload);
+  assert.equal(compatible.decision, 'merge');
+  assert.equal(stored.idNumber, '110101199001011234');
+  assert.equal(stored.idLast4, '1234');
+});
+
 test('customer masking follows the requesting actor and strips unrecognized secrets', (t) => {
   const { store, service } = fixture(t);
   const result = imported(service, 'masked', { idNumber: 'FICTIONAL-ID-1234', token: 'fake-token', cookie: 'fake-cookie', nested: { password: 'fake-pass' } }, serviceActor);

@@ -53,6 +53,19 @@ function customerPayload(input) {
   return result;
 }
 
+function identityFieldsConflict(master, candidate) {
+  const masterExplicit = normalizeIdLast4(master.idLast4);
+  const masterDerived = normalizeIdLast4(typeof master.idNumber === 'string' ? master.idNumber.slice(-4) : '');
+  const candidateExplicit = normalizeIdLast4(candidate.idLast4);
+  const candidateDerived = normalizeIdLast4(candidate.idNumber.slice(-4));
+  if ((masterExplicit && masterDerived && masterExplicit !== masterDerived)
+    || (candidateExplicit && candidateDerived && candidateExplicit !== candidateDerived)) return true;
+  const masterSuffix = masterExplicit || masterDerived;
+  const candidateSuffix = candidateExplicit || candidateDerived;
+  if (masterSuffix && candidateSuffix && masterSuffix !== candidateSuffix) return true;
+  return Boolean(master.idNumber && candidate.idNumber && master.idNumber !== candidate.idNumber);
+}
+
 function createCrmService({ store, clock = () => new Date() }) {
   const { db } = store;
   const loadCustomer = id => {
@@ -114,6 +127,9 @@ function createCrmService({ store, clock = () => new Date() }) {
       const saved = decision.decision === 'merge' ? loadCustomer(decision.customerId) : { ...candidate, id: crypto.randomUUID(), createdAt: timestamp };
       const changedFields = [];
       if (decision.decision === 'merge') {
+        if (identityFieldsConflict(saved, candidate)) {
+          fail('CUSTOMER_REVIEW_REQUIRED', { decision: 'review', reasons: ['IDENTITY_FIELD_CONFLICT'] });
+        }
         for (const field of ['name', 'phone', 'wechat', 'idNumber', 'idLast4', 'assignedTeacherId', 'stage', 'nextFollowUpAt', 'notes']) {
           if (!saved[field] && candidate[field]) {
             saved[field] = candidate[field];
