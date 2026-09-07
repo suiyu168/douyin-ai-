@@ -142,7 +142,9 @@ function createApiRouter({ service }) {
         sendJson(response, 200, service.appendPayment({ actor, requestId: body.requestId, orderId: body.orderId, entry: pick(body.entry, ['type', 'idempotencyKey', 'amountCents', 'status', 'direction', 'occurredAt']) }));
       } else if (target.pathname === '/api/conversations/triage' && request.method === 'POST') {
         noQuery(target); const body = await readJson(request);
-        sendJson(response, 200, service.triageConversation({ actor, requestId: body.requestId, customerId: body.customerId, conversation: pick(body.conversation, ['message', 'confidence', 'citations']) }));
+        // Browser callers provide only the customer message. Model confidence and
+        // approved knowledge metadata must come from a server-owned adapter.
+        sendJson(response, 200, service.triageConversation({ actor, requestId: body.requestId, customerId: body.customerId, conversation: pick(body.conversation, ['message']) }));
       } else if (target.pathname === '/api/dashboard') {
         throw methodNotAllowed('GET');
       } else if (target.pathname === '/api/customers') {

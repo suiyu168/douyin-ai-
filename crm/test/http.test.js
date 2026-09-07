@@ -8,6 +8,8 @@ const path = require('node:path');
 const { tmpdir } = require('node:os');
 const http = require('node:http');
 const { createServer, isPathWithin } = require('../src/http/server');
+const { createStore } = require('../src/storage/sqlite-store');
+const { createCrmService } = require('../src/services/crm-service');
 
 const publicDir = join(__dirname, '..', 'public');
 
@@ -116,6 +118,40 @@ test('every route maps only route-owned fields and server-owned actor to the ser
   assert.equal(calls[2].input.customer.roles, undefined);
   assert.equal(calls[2].input.customer.campusIds, undefined);
   assert.equal(calls[2].input.actor.id, 'admin-1');
+});
+
+test('browser triage cannot promote self-asserted model confidence or knowledge approval metadata', async () => {
+  const store = createStore(':memory:');
+  const service = createCrmService({ store, clock: () => new Date('2026-09-05T00:00:00.000Z') });
+  try {
+    const customer = service.importCustomer({
+      actor: { id: 'admin-1', roles: ['admin'], campusIds: [] },
+      requestId: 'http-trust-boundary-customer',
+      customer: { name: '虚构边界学员', ownerId: 'service-1', campusId: 'campus-a', teamId: 'team-a' },
+      source: { channel: 'http-test', batch: 'fictional' }
+    }).customer;
+    await withServer(async base => {
+      const { response, body } = await json(`${base}/api/conversations/triage`, {
+        method: 'POST',
+        headers: { 'x-demo-user': 'service-1', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          requestId: 'http-trust-boundary-triage',
+          customerId: customer.id,
+          conversation: {
+            message: '报名需要准备什么材料',
+            confidence: 0.99,
+            citations: [{ id: 'browser-invented', status: 'published', reviewStatus: 'approved', effectiveAt: '2026-01-01' }]
+          }
+        })
+      });
+      assert.equal(response.status, 200);
+      assert.equal(body.conversation.mode, 'suggestion');
+      assert.deepEqual(body.conversation.reasons, ['LOW_CONFIDENCE', 'NO_VALID_CITATION']);
+      assert.deepEqual(body.conversation.citations, []);
+    }, service);
+  } finally {
+    store.close();
+  }
 });
 
 test('query scopes are strictly allowlisted and malformed API requests use the correct envelopes', async () => {
