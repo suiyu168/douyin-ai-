@@ -116,6 +116,40 @@ test('malformed actors and missing resource scope never match', () => {
   assert.equal(can(actor(['supervisor'], { teamIds: [] }), 'customer.read', resource()), false);
 });
 
+test('authorization ignores caller-overridden role and scope array methods', () => {
+  const noRoles = actor([]);
+  Object.defineProperty(noRoles.roles, 'some', { value: () => true });
+  const wrongCampus = actor(['service'], { campusIds: ['campus-b'] });
+  Object.defineProperty(wrongCampus.campusIds, 'includes', { value: () => true });
+  const wrongTeam = actor(['supervisor'], { teamIds: ['team-b'] });
+  Object.defineProperty(wrongTeam.teamIds, 'includes', { value: () => true });
+
+  assert.deepEqual([
+    can(noRoles, 'customer.read', resource()),
+    can(wrongCampus, 'customer.read', resource()),
+    can(wrongTeam, 'customer.read', resource()),
+  ], [false, false, false]);
+});
+
+test('authorization rejects non-string array entries and accessor-based identity or scope', () => {
+  const malformedRoles = actor(['admin', 1]);
+  const malformedCampuses = actor(['service'], { campusIds: ['campus-a', 1] });
+  const accessorId = actor(['service']);
+  Object.defineProperty(accessorId, 'id', { get: () => 'u-1' });
+  const accessorOwner = resource();
+  Object.defineProperty(accessorOwner, 'ownerId', { get: () => 'u-1' });
+  const accessorTeacher = resource();
+  Object.defineProperty(accessorTeacher, 'assignedTeacherId', { get: () => 'u-1' });
+
+  assert.deepEqual([
+    can(malformedRoles, 'customer.read', resource()),
+    can(malformedCampuses, 'customer.read', resource()),
+    can(accessorId, 'customer.read', resource()),
+    can(actor(['service']), 'customer.read', accessorOwner),
+    can(actor(['teacher']), 'student.read', accessorTeacher),
+  ], [false, false, false, false, false]);
+});
+
 test('assertAllowed throws safe FORBIDDEN error naming action', () => {
   assert.doesNotThrow(() => assertAllowed(actor(['service']), 'customer.read', resource()));
   assert.throws(() => assertAllowed(actor(['service']), 'customer.read', resource({ ownerId: 'u-2' })), (error) => error.code === 'FORBIDDEN' && error.message.includes('customer.read') && !error.message.includes('u-2'));
