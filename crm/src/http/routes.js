@@ -4,6 +4,7 @@ const MAX_JSON_BYTES = 1024 * 1024;
 
 const DEMO_ACTORS = Object.freeze({
   'admin-1': Object.freeze({ id: 'admin-1', roles: Object.freeze(['admin']), campusIds: Object.freeze([]), teamIds: Object.freeze([]) }),
+  'consultant-1': Object.freeze({ id: 'consultant-1', roles: Object.freeze(['consultant']), campusIds: Object.freeze(['campus-a']), teamIds: Object.freeze([]) }),
   'supervisor-1': Object.freeze({ id: 'supervisor-1', roles: Object.freeze(['supervisor']), campusIds: Object.freeze(['campus-a']), teamIds: Object.freeze(['team-a']) }),
   'service-1': Object.freeze({ id: 'service-1', roles: Object.freeze(['service']), campusIds: Object.freeze(['campus-a']), teamIds: Object.freeze([]) }),
   'teacher-1': Object.freeze({ id: 'teacher-1', roles: Object.freeze(['teacher']), campusIds: Object.freeze(['campus-a']), teamIds: Object.freeze([]) }),
@@ -33,7 +34,10 @@ function statusFor(code) {
   if (code === 'METHOD_NOT_ALLOWED') return 405;
   if (code === 'PAYLOAD_TOO_LARGE') return 413;
   if (code === 'UNSUPPORTED_MEDIA_TYPE') return 415;
-  if (['CUSTOMER_REVIEW_REQUIRED', 'DUPLICATE_LEDGER_ENTRY', 'REQUEST_ID_CONFLICT', 'ID_CONFLICT'].includes(code)) return 409;
+  if ([
+    'CUSTOMER_REVIEW_REQUIRED', 'DUPLICATE_LEDGER_ENTRY', 'REQUEST_ID_CONFLICT', 'ID_CONFLICT',
+    'ENROLLMENT_PENDING', 'STUDENT_EXISTS', 'ENROLLMENT_ALREADY_DECIDED', 'INVALID_TASK_TRANSITION'
+  ].includes(code)) return 409;
   if (code === 'INVALID_JSON' || code === 'INVALID_SCOPE' || code.startsWith('INVALID_') || code === 'UNAPPROVED_DISCOUNT') return 400;
   return 500;
 }
@@ -145,10 +149,34 @@ function createApiRouter({ service }) {
         // Browser callers provide only the customer message. Model confidence and
         // approved knowledge metadata must come from a server-owned adapter.
         sendJson(response, 200, service.triageConversation({ actor, requestId: body.requestId, customerId: body.customerId, conversation: pick(body.conversation, ['message']) }));
+      } else if (target.pathname === '/api/enrollments' && request.method === 'GET') {
+        sendJson(response, 200, service.listEnrollments({ actor, scope: scopeFor(target) }));
+      } else if (target.pathname === '/api/enrollments' && request.method === 'POST') {
+        noQuery(target); const body = await readJson(request);
+        sendJson(response, 200, service.submitEnrollment({ actor, requestId: body.requestId, customerId: body.customerId, enrollment: pick(body.enrollment, ['currentEducation', 'targetLevel', 'school', 'major', 'classType']) }));
+      } else if (target.pathname === '/api/enrollment-decisions' && request.method === 'POST') {
+        noQuery(target); const body = await readJson(request);
+        sendJson(response, 200, service.decideEnrollment({ actor, requestId: body.requestId, enrollmentId: body.enrollmentId, decision: pick(body.decision, ['status', 'reason']) }));
+      } else if (target.pathname === '/api/students' && request.method === 'GET') {
+        sendJson(response, 200, service.listStudents({ actor, scope: scopeFor(target) }));
+      } else if (target.pathname === '/api/follow-up-tasks' && request.method === 'GET') {
+        sendJson(response, 200, service.listFollowUpTasks({ actor, scope: scopeFor(target) }));
+      } else if (target.pathname === '/api/follow-up-tasks' && request.method === 'POST') {
+        noQuery(target); const body = await readJson(request);
+        sendJson(response, 200, service.createFollowUpTask({ actor, requestId: body.requestId, customerId: body.customerId, task: pick(body.task, ['title', 'dueAt']) }));
+      } else if (target.pathname === '/api/follow-up-task-status' && request.method === 'POST') {
+        noQuery(target); const body = await readJson(request);
+        sendJson(response, 200, service.updateFollowUpTaskStatus({ actor, requestId: body.requestId, taskId: body.taskId, status: body.status }));
       } else if (target.pathname === '/api/dashboard') {
         throw methodNotAllowed('GET');
       } else if (target.pathname === '/api/customers') {
         throw methodNotAllowed('GET, POST');
+      } else if (target.pathname === '/api/enrollments' || target.pathname === '/api/follow-up-tasks') {
+        throw methodNotAllowed('GET, POST');
+      } else if (target.pathname === '/api/students') {
+        throw methodNotAllowed('GET');
+      } else if (['/api/enrollment-decisions', '/api/follow-up-task-status'].includes(target.pathname)) {
+        throw methodNotAllowed('POST');
       } else if (['/api/orders', '/api/ledger', '/api/conversations/triage'].includes(target.pathname)) {
         throw methodNotAllowed('POST');
       } else {

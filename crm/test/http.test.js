@@ -16,15 +16,35 @@ const publicDir = join(__dirname, '..', 'public');
 function spyService() {
   const calls = [];
   const service = {};
-  for (const method of ['dashboard', 'listCustomers', 'importCustomer', 'createOrder', 'appendPayment', 'triageConversation']) {
+  const responses = {
+    listEnrollments: { enrollments: [{ id: 'enrollment-spy' }] },
+    submitEnrollment: { enrollment: { id: 'enrollment-spy', status: 'pending' } },
+    decideEnrollment: { enrollment: { id: 'enrollment-spy', status: 'approved' }, student: { id: 'student-spy' }, task: { id: 'task-spy' } },
+    listStudents: { students: [{ id: 'student-spy' }] },
+    listFollowUpTasks: { tasks: [{ id: 'task-spy' }] },
+    createFollowUpTask: { task: { id: 'task-spy', status: 'open' } },
+    updateFollowUpTaskStatus: { task: { id: 'task-spy', status: 'completed' } }
+  };
+  const conflicts = {
+    'throw-enrollment-pending': 'ENROLLMENT_PENDING',
+    'throw-student-exists': 'STUDENT_EXISTS',
+    'throw-enrollment-decided': 'ENROLLMENT_ALREADY_DECIDED',
+    'throw-task-transition': 'INVALID_TASK_TRANSITION'
+  };
+  for (const method of [
+    'dashboard', 'listCustomers', 'importCustomer', 'createOrder', 'appendPayment', 'triageConversation',
+    'listEnrollments', 'submitEnrollment', 'decideEnrollment', 'listStudents',
+    'listFollowUpTasks', 'createFollowUpTask', 'updateFollowUpTaskStatus'
+  ]) {
     service[method] = input => {
       calls.push({ method, input });
       if (input?.customer?.name === 'throw-forbidden') throw Object.assign(new Error('internal path /secret.db'), { code: 'FORBIDDEN' });
       if (input?.customer?.name === 'throw-conflict') throw Object.assign(new Error('internal path /secret.db'), { code: 'CUSTOMER_REVIEW_REQUIRED' });
       if (input?.customer?.name === 'throw-unexpected') throw new Error('SQLITE at C:\\hidden\\db.sqlite');
+      if (conflicts[input?.requestId]) throw Object.assign(new Error('private path C:\\hidden\\workflow.sqlite'), { code: conflicts[input.requestId] });
       return method === 'dashboard'
         ? { customerCount: 0, pendingHumanCount: 0, metrics: { agreed: { amountCents: 0 }, received: { amountCents: 0 }, outstanding: { amountCents: 0 } } }
-        : method === 'listCustomers' ? { customers: [] } : { method, ok: true };
+        : method === 'listCustomers' ? { customers: [] } : responses[method] || { method, ok: true };
     };
   }
   return { service, calls };
@@ -118,6 +138,138 @@ test('every route maps only route-owned fields and server-owned actor to the ser
   assert.equal(calls[2].input.customer.roles, undefined);
   assert.equal(calls[2].input.customer.campusIds, undefined);
   assert.equal(calls[2].input.actor.id, 'admin-1');
+});
+
+test('enrollment student and follow-up routes forward only route-owned fields with server actors', async () => {
+  const { service, calls } = spyService();
+  const hostile = {
+    roles: ['admin'], campusId: 'campus-z', teamId: 'team-z', campusIds: ['campus-z'], teamIds: ['team-z'],
+    ownerId: 'attacker', status: 'completed', studentId: 'caller-student', originType: 'manual', originId: 'caller-origin',
+    submittedBy: 'attacker', submittedAt: '1999-01-01T00:00:00.000Z', decidedBy: 'attacker', decidedAt: '1999-01-01T00:00:00.000Z',
+    createdAt: '1999-01-01T00:00:00.000Z', id: 'caller-id',
+    token: 'secret-token', cookie: 'secret-cookie'
+  };
+  const enrollment = { currentEducation: '高中', targetLevel: '本科', school: '虚构大学', major: '计算机', classType: '周末班' };
+  await withServer(async base => {
+    const get = async (route, user) => json(`${base}${route}`, { headers: { 'x-demo-user': user } });
+    const post = async (route, user, body) => json(`${base}${route}`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-demo-user': user }, body: JSON.stringify(body)
+    });
+    assert.deepEqual((await get('/api/enrollments?ownerId=consultant-1', 'consultant-1')).body, { enrollments: [{ id: 'enrollment-spy' }] });
+    assert.deepEqual((await post('/api/enrollments', 'consultant-1', { ...hostile, requestId: 'submit-http', customerId: 'customer-1', enrollment: { ...enrollment, ...hostile }, actor: hostile })).body, { enrollment: { id: 'enrollment-spy', status: 'pending' } });
+    assert.deepEqual((await post('/api/enrollment-decisions', 'supervisor-1', { ...hostile, requestId: 'decision-http', enrollmentId: 'enrollment-1', decision: { ...hostile, status: 'approved' }, actor: hostile })).body, { enrollment: { id: 'enrollment-spy', status: 'approved' }, student: { id: 'student-spy' }, task: { id: 'task-spy' } });
+    assert.deepEqual((await get('/api/students?campusId=campus-a&teamId=team-a', 'supervisor-1')).body, { students: [{ id: 'student-spy' }] });
+    assert.deepEqual((await get('/api/follow-up-tasks?ownerId=consultant-1', 'consultant-1')).body, { tasks: [{ id: 'task-spy' }] });
+    assert.deepEqual((await post('/api/follow-up-tasks', 'consultant-1', { ...hostile, requestId: 'task-http', customerId: 'customer-1', task: { ...hostile, title: '联系客户', dueAt: '2026-09-08T00:00:00.000Z' }, actor: hostile })).body, { task: { id: 'task-spy', status: 'open' } });
+    assert.deepEqual((await post('/api/follow-up-task-status', 'consultant-1', { ...hostile, requestId: 'task-status-http', taskId: 'task-spy', status: 'completed', actor: hostile })).body, { task: { id: 'task-spy', status: 'completed' } });
+  }, service);
+
+  assert.deepEqual(calls.find(call => call.method === 'listEnrollments').input, {
+    actor: { id: 'consultant-1', roles: ['consultant'], campusIds: ['campus-a'], teamIds: [] }, scope: { ownerId: 'consultant-1' }
+  });
+  assert.deepEqual(calls.find(call => call.method === 'submitEnrollment').input, {
+    actor: { id: 'consultant-1', roles: ['consultant'], campusIds: ['campus-a'], teamIds: [] },
+    requestId: 'submit-http', customerId: 'customer-1', enrollment
+  });
+  assert.deepEqual(calls.find(call => call.method === 'decideEnrollment').input, {
+    actor: { id: 'supervisor-1', roles: ['supervisor'], campusIds: ['campus-a'], teamIds: ['team-a'] },
+    requestId: 'decision-http', enrollmentId: 'enrollment-1', decision: { status: 'approved' }
+  });
+  assert.deepEqual(calls.find(call => call.method === 'listStudents').input, {
+    actor: { id: 'supervisor-1', roles: ['supervisor'], campusIds: ['campus-a'], teamIds: ['team-a'] }, scope: { campusId: 'campus-a', teamId: 'team-a' }
+  });
+  assert.deepEqual(calls.find(call => call.method === 'listFollowUpTasks').input, {
+    actor: { id: 'consultant-1', roles: ['consultant'], campusIds: ['campus-a'], teamIds: [] }, scope: { ownerId: 'consultant-1' }
+  });
+  assert.deepEqual(calls.find(call => call.method === 'createFollowUpTask').input, {
+    actor: { id: 'consultant-1', roles: ['consultant'], campusIds: ['campus-a'], teamIds: [] }, requestId: 'task-http', customerId: 'customer-1',
+    task: { title: '联系客户', dueAt: '2026-09-08T00:00:00.000Z' }
+  });
+  assert.deepEqual(calls.find(call => call.method === 'updateFollowUpTaskStatus').input, {
+    actor: { id: 'consultant-1', roles: ['consultant'], campusIds: ['campus-a'], teamIds: [] }, requestId: 'task-status-http', taskId: 'task-spy', status: 'completed'
+  });
+});
+
+test('enrollment and follow-up routes reject POST queries malformed JSON invalid GET scopes and non-exact paths', async () => {
+  const { service, calls } = spyService();
+  await withServer(async base => {
+    const headers = { 'x-demo-user': 'admin-1', 'content-type': 'application/json' };
+    for (const route of ['/api/enrollments?', '/api/enrollment-decisions?x=1', '/api/follow-up-tasks?ownerId=admin-1', '/api/follow-up-task-status?']) {
+      const result = await rawTargetRequest(base, route, { method: 'POST', headers });
+      assert.equal(result.status, 400, route);
+      assert.equal(JSON.parse(result.body).error.code, 'INVALID_SCOPE', route);
+    }
+    for (const route of ['/api/enrollments?ownerId=a&ownerId=b', '/api/students?role=teacher', '/api/follow-up-tasks?campusId=campus-a&unknown=x']) {
+      const { response, body } = await json(`${base}${route}`, { headers });
+      assert.equal(response.status, 400, route);
+      assert.equal(body.error.code, 'INVALID_SCOPE', route);
+    }
+    const malformed = await json(`${base}/api/enrollments`, { method: 'POST', headers, body: '{' });
+    assert.equal(malformed.response.status, 400);
+    assert.equal(malformed.body.error.code, 'INVALID_JSON');
+    for (const route of ['/api/enrollments/one', '/api/student', '/api/follow-up-task-status/one']) {
+      const { response, body } = await json(`${base}${route}`, { headers });
+      assert.equal(response.status, 404, route);
+      assert.equal(body.error.code, 'NOT_FOUND', route);
+    }
+  }, service);
+  assert.equal(calls.length, 0);
+});
+
+test('enrollment and follow-up conflicts map to safe 409 envelopes', async () => {
+  const { service } = spyService();
+  await withServer(async base => {
+    const headers = { 'x-demo-user': 'admin-1', 'content-type': 'application/json' };
+    for (const [requestId, code, route] of [
+      ['throw-enrollment-pending', 'ENROLLMENT_PENDING', '/api/enrollments'],
+      ['throw-student-exists', 'STUDENT_EXISTS', '/api/enrollments'],
+      ['throw-enrollment-decided', 'ENROLLMENT_ALREADY_DECIDED', '/api/enrollment-decisions'],
+      ['throw-task-transition', 'INVALID_TASK_TRANSITION', '/api/follow-up-task-status']
+    ]) {
+      const { response, body } = await json(`${base}${route}`, { method: 'POST', headers, body: JSON.stringify({ requestId }) });
+      assert.equal(response.status, 409, code);
+      assert.deepEqual(body, { error: { code, message: '请求无法完成' } });
+      assert.equal(JSON.stringify(body).includes('hidden'), false);
+      assert.equal(JSON.stringify(body).includes('workflow.sqlite'), false);
+    }
+  }, service);
+});
+
+test('real HTTP enrollment rejection resubmission approval and task transitions enforce permissions', async () => {
+  const store = createStore(':memory:');
+  const service = createCrmService({ store, clock: () => new Date('2026-09-07T00:00:00.000Z') });
+  const enrollmentInput = { currentEducation: '高中', targetLevel: '本科', school: '虚构大学', major: '计算机', classType: '周末班' };
+  try {
+    const customerId = service.importCustomer({
+      actor: { id: 'admin-1', roles: ['admin'], campusIds: [] }, requestId: 'http-workflow-customer',
+      customer: { name: '虚构顾问学员', phone: '13800000081', wechat: 'fictional_http_student', ownerId: 'consultant-1', campusId: 'campus-a', teamId: 'team-a', assignedTeacherId: 'teacher-1' },
+      source: { channel: 'http-test', batch: 'fictional' }
+    }).customer.id;
+    await withServer(async base => {
+      const apiPost = (route, user, body) => json(`${base}${route}`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-demo-user': user }, body: JSON.stringify(body)
+      });
+      const first = await apiPost('/api/enrollments', 'consultant-1', { requestId: 'http-submit-1', customerId, enrollment: enrollmentInput });
+      for (const user of ['service-1', 'finance-1']) {
+        const denied = await apiPost('/api/enrollment-decisions', user, { requestId: `http-denied-${user}`, enrollmentId: first.body.enrollment.id, decision: { status: 'approved' } });
+        assert.equal(denied.response.status, 403, user);
+        assert.deepEqual(denied.body, { error: { code: 'FORBIDDEN', message: '没有权限执行此操作' } });
+      }
+      const rejected = await apiPost('/api/enrollment-decisions', 'supervisor-1', { requestId: 'http-reject', enrollmentId: first.body.enrollment.id, decision: { status: 'rejected', reason: '信息不完整' } });
+      const second = await apiPost('/api/enrollments', 'consultant-1', { requestId: 'http-submit-2', customerId, enrollment: enrollmentInput });
+      const approved = await apiPost('/api/enrollment-decisions', 'supervisor-1', { requestId: 'http-approve', enrollmentId: second.body.enrollment.id, decision: { status: 'approved' } });
+      const started = await apiPost('/api/follow-up-task-status', 'consultant-1', { requestId: 'http-task-start', taskId: approved.body.task.id, status: 'in_progress' });
+      const completed = await apiPost('/api/follow-up-task-status', 'consultant-1', { requestId: 'http-task-complete', taskId: approved.body.task.id, status: 'completed' });
+      assert.deepEqual([first.response.status, rejected.response.status, second.response.status, approved.response.status, started.response.status, completed.response.status], [200, 200, 200, 200, 200, 200]);
+      assert.equal(rejected.body.enrollment.status, 'rejected');
+      assert.equal(approved.body.enrollment.status, 'approved');
+      assert.equal(started.body.task.status, 'in_progress');
+      assert.equal(completed.body.task.status, 'completed');
+      assert.equal((await json(`${base}/api/students`, { headers: { 'x-demo-user': 'supervisor-1' } })).body.students.length, 1);
+    }, service);
+  } finally {
+    store.close();
+  }
 });
 
 test('browser triage cannot promote self-asserted model confidence or knowledge approval metadata', async () => {
@@ -262,7 +414,9 @@ test('405 Allow advertises only the methods implemented by each API route', asyn
     const headers = { 'x-demo-user': 'admin-1' };
     for (const [path, method, allow] of [
       ['/api/health', 'POST', 'GET'], ['/api/dashboard', 'POST', 'GET'], ['/api/customers', 'PUT', 'GET, POST'],
-      ['/api/orders', 'GET', 'POST'], ['/api/ledger', 'GET', 'POST'], ['/api/conversations/triage', 'GET', 'POST']
+      ['/api/orders', 'GET', 'POST'], ['/api/ledger', 'GET', 'POST'], ['/api/conversations/triage', 'GET', 'POST'],
+      ['/api/enrollments', 'PUT', 'GET, POST'], ['/api/enrollment-decisions', 'GET', 'POST'], ['/api/students', 'POST', 'GET'],
+      ['/api/follow-up-tasks', 'PUT', 'GET, POST'], ['/api/follow-up-task-status', 'GET', 'POST']
     ]) {
       const { response } = await json(`${base}${path}`, { method, headers });
       assert.equal(response.status, 405);
