@@ -11,11 +11,11 @@ const { createStore } = require('../src/storage/sqlite-store');
 const { createCrmService } = require('../src/services/crm-service');
 
 // Public service contract: synchronous JSON-safe object arguments/results.
-// Writes: { actor, requestId, customer|order|entry|conversation|enrollment|decision, source?, customerId?, orderId?, enrollmentId? }.
+// Writes: { actor, requestId, customer|order|entry|conversation|enrollment|decision|task, source?, customerId?, orderId?, enrollmentId?, taskId?, status? }.
 // Reads: { actor, scope?: { campusId?, teamId?, ownerId? } }.
 // Import -> { decision, reasons, customer, sourceId }; order/payment -> { order, summary };
-// triage -> { conversation }; enrollment decision -> { enrollment, student, task }; lists -> { customers|enrollments|students };
-// dashboard -> { customerCount, metrics, pendingHumanCount, pendingConversationIds }.
+// triage -> { conversation }; enrollment decision -> { enrollment, student, task }; lists -> { customers|enrollments|students|tasks };
+// dashboard preserves customer/conversation/money fields and adds traceable enrollment/student/task counts and IDs.
 // Review is a CUSTOMER_REVIEW_REQUIRED error with safe decision/reasons, no mutation.
 // Actor objects are trusted server-resolved identities, never browser-supplied roles.
 const admin = { id: 'admin-1', roles: ['admin'], campusIds: [] };
@@ -29,6 +29,9 @@ const paid = (service, orderId, requestId = 'payment-1', extra = {}, actor = adm
 const triaged = (service, customerId, requestId = 'triage-1', extra = {}, actor = admin) => service.triageConversation({ actor, requestId, customerId, conversation: { message: '报名需要哪些材料', confidence: 0.9, citations: [], ...extra } });
 const enrollmentInput = (extra = {}) => ({ currentEducation: '高中', targetLevel: '本科', school: '虚构大学', major: '计算机', classType: '周末班', ...extra });
 const submittedEnrollment = (service, customerId, requestId = 'submit-1', extra = {}, actor = admin) => service.submitEnrollment({ actor, requestId, customerId, enrollment: enrollmentInput(extra) });
+const createdTask = (service, customerId, requestId = 'task-create-1', extra = {}, actor = admin) => service.createFollowUpTask({
+  actor, requestId, customerId, task: { title: '联系客户', dueAt: '2026-09-04T23:59:59.999Z', ...extra },
+});
 const activeCitation = (id = 'knowledge-v1') => ({ id, status: 'published', reviewStatus: 'approved', effectiveAt: '2026-08-01', expiresAt: '2026-10-01', text: 'fictional knowledge' });
 function fixture(t) {
   const store = createStore(':memory:');
@@ -903,4 +906,243 @@ test('file-backed rejected resubmitted and approved enrollment survives reopen b
   assert.deepEqual(store.db.prepare('SELECT id, status, payload FROM enrollment_applications ORDER BY submitted_at, id').all(), before.rows);
   assert.deepEqual(store.db.prepare('SELECT id, payload FROM students').get(), before.student);
   assert.deepEqual(store.db.prepare('SELECT id, status, payload FROM follow_up_tasks').get(), before.task);
+});
+
+test('customer owner creates and advances a task while overdue is derived from the server clock', (t) => {
+  const { store, service } = fixture(t);
+  const consultant = { id: 'consultant-1', roles: ['consultant'], campusIds: ['campus-a'], teamIds: [] };
+  const customerId = imported(service, 'task-owner-customer', { ownerId: consultant.id }).customer.id;
+  const created = createdTask(service, customerId, 'task-create', {
+    id: 'browser-id', ownerId: 'browser-owner', status: 'completed', studentId: 'browser-student',
+    originType: 'enrollment_approval', originId: 'browser-origin', title: ' 联系客户 ',
+  }, consultant).task;
+  assert.notEqual(created.id, 'browser-id');
+  assert.deepEqual(created, {
+    id: created.id, customerId, studentId: '', originType: 'manual', originId: '', ownerId: consultant.id,
+    title: '联系客户', dueAt: '2026-09-04T23:59:59.999Z', status: 'open', overdue: true,
+  });
+  assert.deepEqual(JSON.parse(store.db.prepare('SELECT payload FROM follow_up_tasks WHERE id = ?').get(created.id).payload), {
+    id: created.id, customerId, studentId: '', originType: 'manual', originId: '', ownerId: consultant.id,
+    title: '联系客户', dueAt: '2026-09-04T23:59:59.999Z', status: 'open',
+  });
+  const started = service.updateFollowUpTaskStatus({ actor: consultant, requestId: 'task-start', taskId: created.id, status: 'in_progress' }).task;
+  assert.equal(started.status, 'in_progress');
+  assert.equal(started.overdue, true);
+  const completed = service.updateFollowUpTaskStatus({ actor: consultant, requestId: 'task-complete', taskId: created.id, status: 'completed' }).task;
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.overdue, false);
+  const row = store.db.prepare('SELECT status, payload FROM follow_up_tasks WHERE id = ?').get(created.id);
+  assert.equal(row.status, 'completed');
+  assert.equal(JSON.parse(row.payload).status, 'completed');
+});
+
+test('task status service allows every forward edge and rejects repeats backward edges and terminal changes', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'task-transition-customer').customer.id;
+  const make = name => createdTask(service, customerId, `task-transition-create-${name}`).task;
+  const advance = (task, status, suffix) => service.updateFollowUpTaskStatus({ actor: admin, requestId: `task-transition-${suffix}`, taskId: task.id, status }).task;
+
+  const directComplete = make('direct-complete');
+  assert.equal(advance(directComplete, 'completed', 'direct-complete').status, 'completed');
+  const directCancel = make('direct-cancel');
+  assert.equal(advance(directCancel, 'cancelled', 'direct-cancel').status, 'cancelled');
+  const progressCancel = make('progress-cancel');
+  assert.equal(advance(advance(progressCancel, 'in_progress', 'progress-cancel-start'), 'cancelled', 'progress-cancel-end').status, 'cancelled');
+
+  const cases = [
+    ['open-repeat', 'open', ['open', 'unknown']],
+    ['in-progress', 'in_progress', ['open', 'in_progress', 'unknown']],
+    ['completed', 'completed', ['open', 'in_progress', 'completed', 'cancelled', 'unknown']],
+    ['cancelled', 'cancelled', ['open', 'in_progress', 'completed', 'cancelled', 'unknown']],
+  ];
+  for (const [name, initial, forbidden] of cases) {
+    let task = make(name);
+    if (initial !== 'open') task = advance(task, initial, `${name}-setup`);
+    for (const status of forbidden) {
+      const before = workflowCounts(store);
+      assert.throws(() => advance(task, status, `${name}-${status}`), { code: 'INVALID_TASK_TRANSITION' });
+      assert.deepEqual(workflowCounts(store), before);
+      assert.equal(store.db.prepare('SELECT status FROM follow_up_tasks WHERE id = ?').get(task.id).status, initial);
+    }
+  }
+});
+
+test('task dates titles IDs and request objects are validated without partial writes', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'task-invalid-customer').customer.id;
+  const before = workflowCounts(store);
+  for (const [name, task] of [
+    ['blank-title', { title: ' ', dueAt: '2026-09-06' }],
+    ['long-title', { title: 'x'.repeat(201), dueAt: '2026-09-06' }],
+    ['bad-date', { title: '联系客户', dueAt: 'not-a-date' }],
+    ['missing-date', { title: '联系客户' }],
+  ]) assert.throws(() => service.createFollowUpTask({ actor: admin, requestId: `invalid-task-${name}`, customerId, task }), { code: 'INVALID_FOLLOW_UP_TASK' });
+  const accessorTask = {};
+  Object.defineProperty(accessorTask, 'title', { get() { return '秘密'; }, enumerable: true });
+  assert.throws(() => service.createFollowUpTask({ actor: admin, requestId: 'invalid-task-accessor', customerId, task: accessorTask }), { code: 'INVALID_FOLLOW_UP_TASK' });
+  assert.throws(() => service.createFollowUpTask({ actor: admin, requestId: 'invalid-task-object', customerId, task: null }), { code: 'INVALID_FOLLOW_UP_TASK' });
+  assert.throws(() => service.updateFollowUpTaskStatus({ actor: admin, requestId: 'invalid-task-id', taskId: 'missing-task', status: 'completed' }), { code: 'NOT_FOUND' });
+  assert.deepEqual(workflowCounts(store), before);
+});
+
+test('task reads use persisted owner scope exact due boundary and stable due-at then ID ordering', (t) => {
+  const store = createStore(':memory:');
+  t.after(() => store.close());
+  let now = '2026-09-05T00:00:00.000Z';
+  const service = createCrmService({ store, clock: () => new Date(now) });
+  const consultant = { id: 'consultant-1', roles: ['consultant'], campusIds: ['campus-a'], teamIds: [] };
+  const other = { id: 'consultant-2', roles: ['consultant'], campusIds: ['campus-a'], teamIds: [] };
+  const customerId = imported(service, 'task-list-customer', { ownerId: consultant.id }).customer.id;
+  const hiddenCustomerId = imported(service, 'task-list-hidden', { phone: '13900000002', wechat: 'task-hidden', ownerId: other.id }).customer.id;
+  const later = createdTask(service, customerId, 'task-list-later', { dueAt: '2026-09-06' }, consultant).task;
+  const boundary = createdTask(service, customerId, 'task-list-boundary', { dueAt: now }, consultant).task;
+  const sameDue = createdTask(service, customerId, 'task-list-same-due', { dueAt: now }, consultant).task;
+  createdTask(service, hiddenCustomerId, 'task-list-hidden-create', { dueAt: '2026-09-01' }, other);
+
+  let tasks = service.listFollowUpTasks({ actor: consultant }).tasks;
+  assert.deepEqual(tasks.map(task => task.id), [boundary.id, sameDue.id].sort().concat(later.id));
+  assert.equal(tasks.find(task => task.id === boundary.id).overdue, false);
+  assert.ok(tasks.every(task => !Object.hasOwn(task, 'customer')));
+  assert.deepEqual(Object.keys(tasks[0]).sort(), ['customerId', 'dueAt', 'id', 'originId', 'originType', 'overdue', 'ownerId', 'status', 'studentId', 'title']);
+  assert.deepEqual(service.listFollowUpTasks({ actor: consultant, scope: { ownerId: consultant.id } }).tasks.map(task => task.id), tasks.map(task => task.id));
+  assert.throws(() => service.listFollowUpTasks({ actor: consultant, scope: { ownerId: other.id } }), { code: 'FORBIDDEN' });
+  now = '2026-09-05T00:00:00.001Z';
+  tasks = service.listFollowUpTasks({ actor: consultant }).tasks;
+  assert.equal(tasks.find(task => task.id === boundary.id).overdue, true);
+});
+
+test('task authorization follows persisted task owner plus customer campus and team scope', (t) => {
+  const { store, service } = fixture(t);
+  const owner = { id: 'consultant-1', roles: ['consultant'], campusIds: ['campus-a'], teamIds: [] };
+  const newOwner = { id: 'consultant-2', roles: ['consultant'], campusIds: ['campus-a'], teamIds: [] };
+  const supervisor = { id: 'supervisor-1', roles: ['supervisor'], campusIds: ['campus-a'], teamIds: ['team-a'] };
+  const wrongTeam = { id: 'supervisor-2', roles: ['supervisor'], campusIds: ['campus-a'], teamIds: ['team-b'] };
+  const customerId = imported(service, 'task-auth-customer', { ownerId: owner.id }).customer.id;
+  const task = createdTask(service, customerId, 'task-auth-create', {}, owner).task;
+  assert.throws(() => createdTask(service, customerId, 'task-auth-other-create', {}, newOwner), { code: 'FORBIDDEN' });
+  assert.throws(() => service.updateFollowUpTaskStatus({ actor: wrongTeam, requestId: 'task-auth-wrong-team', taskId: task.id, status: 'completed' }), { code: 'FORBIDDEN' });
+
+  const serviceCustomerId = imported(service, 'task-auth-service-customer', { phone: '13900000002', wechat: 'task-auth-service' }).customer.id;
+  const serviceTask = createdTask(service, serviceCustomerId, 'task-auth-service-create', {}, serviceActor).task;
+  assert.deepEqual(service.listFollowUpTasks({ actor: serviceActor }).tasks.map(item => item.id), [serviceTask.id]);
+  assert.equal(service.updateFollowUpTaskStatus({ actor: serviceActor, requestId: 'task-auth-service-update', taskId: serviceTask.id, status: 'completed' }).task.status, 'completed');
+  for (const actor of [
+    { id: 'teacher-1', roles: ['teacher'], campusIds: ['campus-a'], teamIds: [] }, financeActor,
+  ]) assert.throws(() => service.listFollowUpTasks({ actor }), { code: 'FORBIDDEN' });
+
+  const customer = JSON.parse(store.db.prepare('SELECT payload FROM customers WHERE id = ?').get(customerId).payload);
+  customer.ownerId = newOwner.id;
+  store.db.prepare('UPDATE customers SET payload = ? WHERE id = ?').run(JSON.stringify(customer), customerId);
+  assert.equal(JSON.stringify(createdTask(service, 'changed-customer', 'task-auth-create', { title: '已更改' }, owner)), JSON.stringify({ task }));
+  assert.equal(service.listFollowUpTasks({ actor: owner }).tasks.length, 1);
+  assert.equal(service.listFollowUpTasks({ actor: newOwner }).tasks.length, 0);
+  assert.throws(() => service.updateFollowUpTaskStatus({ actor: newOwner, requestId: 'task-auth-new-owner', taskId: task.id, status: 'completed' }), { code: 'FORBIDDEN' });
+  assert.equal(service.updateFollowUpTaskStatus({ actor: owner, requestId: 'task-auth-old-owner', taskId: task.id, status: 'completed' }).task.status, 'completed');
+  assert.equal(service.listFollowUpTasks({ actor: supervisor }).tasks.length, 2);
+  assert.equal(service.listFollowUpTasks({ actor: admin }).tasks.length, 2);
+});
+
+test('task writes replay original bytes and reject cross-actor or permission-downgraded replays', (t) => {
+  const { store, service } = fixture(t);
+  const owner = { id: 'consultant-1', roles: ['consultant'], campusIds: ['campus-a'], teamIds: [] };
+  const customerId = imported(service, 'task-replay-customer', { ownerId: owner.id }).customer.id;
+  const firstCreate = createdTask(service, customerId, 'task-replay-create', {}, owner);
+  const replayCreate = createdTask(service, 'changed-customer', 'task-replay-create', { title: '已更改', dueAt: '2099-01-01' }, owner);
+  assert.equal(JSON.stringify(replayCreate), JSON.stringify(firstCreate));
+  const firstUpdate = service.updateFollowUpTaskStatus({ actor: owner, requestId: 'task-replay-update', taskId: firstCreate.task.id, status: 'in_progress' });
+  const replayUpdate = service.updateFollowUpTaskStatus({ actor: owner, requestId: 'task-replay-update', taskId: 'changed-task', status: 'cancelled' });
+  assert.equal(JSON.stringify(replayUpdate), JSON.stringify(firstUpdate));
+  const before = workflowCounts(store);
+  for (const actor of [
+    { id: 'other-consultant', roles: ['consultant'], campusIds: ['campus-a'], teamIds: [] },
+    { ...owner, roles: ['finance'] },
+  ]) {
+    assert.throws(() => createdTask(service, customerId, 'task-replay-create', {}, actor), { code: 'FORBIDDEN' });
+    assert.throws(() => service.updateFollowUpTaskStatus({ actor, requestId: 'task-replay-update', taskId: firstCreate.task.id, status: 'in_progress' }), { code: 'FORBIDDEN' });
+  }
+  assert.deepEqual(workflowCounts(store), before);
+});
+
+test('task ID audit and request-result failures roll back status and payload atomically', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'task-rollback-customer').customer.id;
+  const existing = createdTask(service, customerId, 'task-existing').task;
+  let before = workflowCounts(store);
+  let mock = t.mock.method(crypto, 'randomUUID', () => existing.id);
+  try { assert.throws(() => createdTask(service, customerId, 'task-id-collision'), { code: 'ID_CONFLICT' }); }
+  finally { mock.mock.restore(); }
+  assert.deepEqual(workflowCounts(store), before);
+
+  for (const table of ['audit_events', 'request_results']) {
+    before = workflowCounts(store);
+    store.db.exec(`CREATE TRIGGER reject_task_create BEFORE INSERT ON ${table} BEGIN SELECT RAISE(ABORT, 'storage unavailable'); END;`);
+    assert.throws(() => createdTask(service, customerId, `task-rollback-create-${table}`));
+    assert.deepEqual(workflowCounts(store), before);
+    store.db.exec('DROP TRIGGER reject_task_create');
+
+    const task = createdTask(service, customerId, `task-rollback-${table}`).task;
+    before = workflowCounts(store);
+    store.db.exec(`CREATE TRIGGER reject_task_write BEFORE INSERT ON ${table} BEGIN SELECT RAISE(ABORT, 'storage unavailable'); END;`);
+    assert.throws(() => service.updateFollowUpTaskStatus({ actor: admin, requestId: `task-rollback-update-${table}`, taskId: task.id, status: 'completed' }));
+    assert.equal(store.db.prepare('SELECT status FROM follow_up_tasks WHERE id = ?').get(task.id).status, 'open');
+    assert.equal(JSON.parse(store.db.prepare('SELECT payload FROM follow_up_tasks WHERE id = ?').get(task.id).payload).status, 'open');
+    assert.deepEqual(workflowCounts(store), before);
+    store.db.exec('DROP TRIGGER reject_task_write');
+  }
+});
+
+test('task audit summaries contain lifecycle facts but no title or customer payload', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'task-audit-customer', { name: 'SECRET-CUSTOMER', phone: '13900000009', notes: 'SECRET-NOTES' }).customer.id;
+  const task = createdTask(service, customerId, 'task-audit-create', { title: 'SECRET-TITLE' }).task;
+  service.updateFollowUpTaskStatus({ actor: admin, requestId: 'task-audit-update', taskId: task.id, status: 'completed' });
+  const audits = store.db.prepare("SELECT action, entity_type, before_summary, after_summary FROM audit_events WHERE action LIKE 'task.%' ORDER BY rowid").all();
+  assert.deepEqual(audits.map(row => row.action), ['task.create', 'task.status.update']);
+  assert.ok(audits.every(row => row.entity_type === 'task'));
+  assert.deepEqual(JSON.parse(audits[1].before_summary), { status: 'open' });
+  assert.deepEqual(JSON.parse(audits[1].after_summary), { status: 'completed' });
+  assert.doesNotMatch(JSON.stringify(audits), /SECRET-TITLE|SECRET-CUSTOMER|13900000009|SECRET-NOTES/);
+});
+
+test('dashboard exposes only traceable visible workflow counts and preserves existing metrics', (t) => {
+  const { service } = fixture(t);
+  const supervisor = { id: 'supervisor-1', roles: ['supervisor'], campusIds: ['campus-a'], teamIds: ['team-a'] };
+  const localApprovedCustomer = imported(service, 'dashboard-workflow-approved', { ownerId: 'consultant-1' }).customer.id;
+  const localPendingCustomer = imported(service, 'dashboard-workflow-pending', { phone: '13900000002', wechat: 'dashboard-pending', ownerId: 'consultant-1' }).customer.id;
+  const hiddenCustomer = imported(service, 'dashboard-workflow-hidden', { phone: '13900000003', wechat: 'dashboard-hidden', campusId: 'campus-b', teamId: 'team-b', ownerId: 'consultant-b' }).customer.id;
+  const localEnrollment = submittedEnrollment(service, localApprovedCustomer, 'dashboard-local-submit').enrollment;
+  const localApproved = service.decideEnrollment({ actor: supervisor, requestId: 'dashboard-local-approve', enrollmentId: localEnrollment.id, decision: { status: 'approved' } });
+  const localPending = submittedEnrollment(service, localPendingCustomer, 'dashboard-local-pending').enrollment;
+  const localOverdue = createdTask(service, localPendingCustomer, 'dashboard-local-overdue').task;
+  const hiddenEnrollment = submittedEnrollment(service, hiddenCustomer, 'dashboard-hidden-submit').enrollment;
+  const hiddenApproved = service.decideEnrollment({ actor: admin, requestId: 'dashboard-hidden-approve', enrollmentId: hiddenEnrollment.id, decision: { status: 'approved' } });
+  const hiddenOverdue = createdTask(service, hiddenCustomer, 'dashboard-hidden-overdue').task;
+  const order = quoted(service, localApprovedCustomer, 'dashboard-workflow-order').order;
+  paid(service, order.id, 'dashboard-workflow-payment');
+  triaged(service, localApprovedCustomer, 'dashboard-workflow-triage', { message: '我要投诉' });
+
+  const report = service.dashboard({ actor: supervisor });
+  assert.deepEqual(report.pendingEnrollmentIds, [localPending.id]);
+  assert.equal(report.pendingEnrollmentCount, 1);
+  assert.deepEqual(report.studentIds, [localApproved.student.id]);
+  assert.equal(report.studentCount, 1);
+  assert.deepEqual(report.openTaskIds, [localApproved.task.id, localOverdue.id].sort());
+  assert.equal(report.openTaskCount, 2);
+  assert.deepEqual(report.overdueTaskIds, [localOverdue.id]);
+  assert.equal(report.overdueTaskCount, 1);
+  assert.equal(report.customerCount, 2);
+  assert.equal(report.pendingHumanCount, 1);
+  assert.equal(report.metrics.agreed.amountCents, 0);
+  assert.deepEqual(report.metrics.agreed.orderIds, []);
+  for (const [ids, count] of [
+    [report.pendingEnrollmentIds, report.pendingEnrollmentCount], [report.studentIds, report.studentCount],
+    [report.openTaskIds, report.openTaskCount], [report.overdueTaskIds, report.overdueTaskCount],
+  ]) assert.equal(ids.length, count);
+
+  const global = service.dashboard({ actor: admin });
+  assert.deepEqual(global.studentIds.sort(), [localApproved.student.id, hiddenApproved.student.id].sort());
+  assert.ok(global.openTaskIds.includes(hiddenOverdue.id));
+  assert.ok(global.overdueTaskIds.includes(hiddenOverdue.id));
+  assert.equal(global.metrics.agreed.amountCents, 950_000);
+  assert.deepEqual(global.metrics.agreed.orderIds, [order.id]);
 });

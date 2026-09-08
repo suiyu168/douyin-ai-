@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const { quoteOrder, appendLedgerEntry, summarizeOrder } = require('../domain/finance');
 const { normalizePhone, normalizeWechat, normalizeIdLast4, customerFingerprint, decideDuplicate } = require('../domain/customer');
 const { createEnrollmentApplication, decideEnrollmentApplication, createStudentRecord } = require('../domain/enrollment');
-const { createFollowUpTask, approvalTaskDueAt, taskView } = require('../domain/follow-up-task');
+const { createFollowUpTask: createDomainFollowUpTask, transitionFollowUpTask, approvalTaskDueAt, taskView } = require('../domain/follow-up-task');
 const { ROLES, can, assertAllowed, maskSensitiveCustomer, maskModuleCustomerSummary } = require('../domain/authorization');
 const { triageMessage } = require('../domain/ai-triage');
 
@@ -25,6 +25,13 @@ function date(value) {
   catch { milliseconds = (typeof value === 'string' || typeof value === 'number') ? new Date(value).getTime() : NaN; }
   if (!Number.isFinite(milliseconds)) fail('INVALID_DATE');
   return new Date(milliseconds).toISOString();
+}
+function followUpTaskDate(value) {
+  try { return date(value); }
+  catch (error) {
+    if (error.code === 'INVALID_DATE') fail('INVALID_FOLLOW_UP_TASK');
+    throw error;
+  }
 }
 function actorSnapshot(value) {
   record(value, 'FORBIDDEN');
@@ -81,7 +88,14 @@ function createCrmService({ store, clock = () => new Date() }) {
     if (!row) fail('NOT_FOUND');
     return JSON.parse(row.payload);
   };
-  function write(input, action, requiredPermissions, work) {
+  const loadFollowUpTask = id => {
+    const row = db.prepare('SELECT payload FROM follow_up_tasks WHERE id = ?').get(string(id, 'INVALID_FOLLOW_UP_TASK', { required: true }));
+    if (!row) fail('NOT_FOUND');
+    return JSON.parse(row.payload);
+  };
+  const taskAuthorizationResource = task => ({ ...loadCustomer(task.customerId), ownerId: task.ownerId });
+  const taskReplayResource = previous => taskAuthorizationResource(loadFollowUpTask(JSON.parse(previous.result).task.id));
+  function write(input, action, requiredPermissions, work, replayResource) {
     record(input, 'INVALID_REQUEST');
     const actor = actorSnapshot(input.actor);
     const requestId = string(input.requestId, 'INVALID_REQUEST_ID', { required: true });
@@ -92,8 +106,8 @@ function createCrmService({ store, clock = () => new Date() }) {
         if (previous) {
           if (previous.actor_id !== actor.id || previous.actor_signature !== signature) fail('FORBIDDEN');
           if (previous.action !== action) fail('REQUEST_ID_CONFLICT');
-          const customer = loadCustomer(previous.customer_id);
-          for (const permission of requiredPermissions) assertAllowed(actor, permission, customer);
+          const resource = replayResource ? replayResource(previous) : loadCustomer(previous.customer_id);
+          for (const permission of requiredPermissions) assertAllowed(actor, permission, resource);
           return JSON.parse(previous.result);
         }
         const timestamp = date(clock());
@@ -223,7 +237,7 @@ function createCrmService({ store, clock = () => new Date() }) {
         student = createStudentRecord({ id: crypto.randomUUID(), customerId: customer.id, enrollmentId: decided.id, createdAt: timestamp });
         db.prepare('INSERT INTO students (id, customer_id, enrollment_id, created_at, payload) VALUES (?, ?, ?, ?, ?)')
           .run(student.id, student.customerId, student.enrollmentId, student.createdAt, JSON.stringify(student));
-        const savedTask = createFollowUpTask({
+        const savedTask = createDomainFollowUpTask({
           id: crypto.randomUUID(), customerId: customer.id, studentId: student.id,
           originType: 'enrollment_approval', originId: decided.id, ownerId: customer.ownerId,
           title: '完成报名交接', dueAt: approvalTaskDueAt(timestamp),
@@ -262,6 +276,47 @@ function createCrmService({ store, clock = () => new Date() }) {
         return [{ ...student, customer: maskModuleCustomerSummary(customer, actor, 'student.read') }];
       });
     return { students };
+  }
+  function createFollowUpTask(input) {
+    return write(input, 'task.create', ['task.create'], (actor, timestamp) => {
+      const customer = loadCustomer(input.customerId);
+      const raw = record(input.task, 'INVALID_FOLLOW_UP_TASK');
+      const saved = createDomainFollowUpTask({
+        id: crypto.randomUUID(), customerId: customer.id, studentId: '', originType: 'manual', originId: '',
+        ownerId: customer.ownerId, title: raw.title, dueAt: followUpTaskDate(raw.dueAt),
+      });
+      assertAllowed(actor, 'task.create', { ...customer, ownerId: saved.ownerId });
+      db.prepare(`INSERT INTO follow_up_tasks
+        (id, customer_id, student_id, origin_type, origin_id, owner_id, due_at, status, payload)
+        VALUES (?, ?, NULL, ?, NULL, ?, ?, ?, ?)`)
+        .run(saved.id, saved.customerId, saved.originType, saved.ownerId, saved.dueAt, saved.status, JSON.stringify(saved));
+      return { customerId: customer.id, entityType: 'task', entityId: saved.id,
+        after: { status: saved.status }, result: { task: taskView(saved, timestamp) } };
+    }, taskReplayResource);
+  }
+  function updateFollowUpTaskStatus(input) {
+    return write(input, 'task.status.update', ['task.update'], (actor, timestamp) => {
+      const task = loadFollowUpTask(input.taskId);
+      const resource = taskAuthorizationResource(task);
+      assertAllowed(actor, 'task.update', resource);
+      const updated = transitionFollowUpTask(task, input.status);
+      db.prepare('UPDATE follow_up_tasks SET status = ?, payload = ? WHERE id = ?')
+        .run(updated.status, JSON.stringify(updated), updated.id);
+      return { customerId: updated.customerId, entityType: 'task', entityId: updated.id,
+        before: { status: task.status }, after: { status: updated.status }, result: { task: taskView(updated, timestamp) } };
+    }, taskReplayResource);
+  }
+  function listFollowUpTasks(input) {
+    const { actor, scope } = scopedReadContext(input, 'task.read');
+    const timestamp = date(clock());
+    const tasks = db.prepare('SELECT payload FROM follow_up_tasks ORDER BY due_at, id').all()
+      .map(row => JSON.parse(row.payload))
+      .filter(task => {
+        const resource = taskAuthorizationResource(task);
+        return Object.entries(scope).every(([key, value]) => resource[key] === value) && can(actor, 'task.read', resource);
+      })
+      .map(task => taskView(task, timestamp));
+    return { tasks };
   }
   function loadOrder(id) {
     const row = db.prepare('SELECT payload FROM orders WHERE id = ?').get(string(id, 'INVALID_ORDER', { required: true }));
@@ -330,6 +385,26 @@ function createCrmService({ store, clock = () => new Date() }) {
     const metrics = Object.fromEntries(['agreed', 'receivable', 'received', 'outstanding', 'refunded', 'reversed', 'netReceived'].map(key => [key, { amountCents: 0, orderIds: [] }]));
     const totals = Object.fromEntries(Object.keys(metrics).map(key => [key, 0n]));
     const timestamp = date(clock());
+    const pendingEnrollmentIds = db.prepare("SELECT id, customer_id FROM enrollment_applications WHERE status = 'pending' ORDER BY id").all()
+      .filter(row => {
+        const customer = loadCustomer(row.customer_id);
+        return Object.entries(scope).every(([key, value]) => customer[key] === value) && can(actor, 'enrollment.read', customer);
+      })
+      .map(row => row.id);
+    const studentIds = db.prepare('SELECT id, customer_id FROM students ORDER BY id').all()
+      .filter(row => {
+        const customer = loadCustomer(row.customer_id);
+        return Object.entries(scope).every(([key, value]) => customer[key] === value) && can(actor, 'student.read', customer);
+      })
+      .map(row => row.id);
+    const openTasks = db.prepare("SELECT payload FROM follow_up_tasks WHERE status IN ('open', 'in_progress') ORDER BY id").all()
+      .map(row => JSON.parse(row.payload))
+      .filter(task => {
+        const resource = taskAuthorizationResource(task);
+        return Object.entries(scope).every(([key, value]) => resource[key] === value) && can(actor, 'task.read', resource);
+      });
+    const openTaskIds = openTasks.map(task => task.id);
+    const overdueTaskIds = openTasks.filter(task => taskView(task, timestamp).overdue).map(task => task.id);
     for (const row of db.prepare('SELECT id, customer_id FROM orders ORDER BY id').all()) {
       if (!orderCustomerIds.has(row.customer_id)) continue;
       const summary = summarizeOrder(loadOrder(row.id), timestamp);
@@ -343,10 +418,17 @@ function createCrmService({ store, clock = () => new Date() }) {
       if (totals[key] > BigInt(Number.MAX_SAFE_INTEGER) || totals[key] < -BigInt(Number.MAX_SAFE_INTEGER)) fail('INVALID_TOTAL');
       metrics[key].amountCents = Number(totals[key]);
     }
-    return { customerCount: customers.length, metrics, pendingHumanCount: pendingConversationIds.length, pendingConversationIds };
+    return {
+      customerCount: customers.length, metrics, pendingHumanCount: pendingConversationIds.length, pendingConversationIds,
+      pendingEnrollmentCount: pendingEnrollmentIds.length, pendingEnrollmentIds,
+      studentCount: studentIds.length, studentIds,
+      openTaskCount: openTaskIds.length, openTaskIds,
+      overdueTaskCount: overdueTaskIds.length, overdueTaskIds,
+    };
   }
   return {
     importCustomer, listCustomers, submitEnrollment, decideEnrollment, listEnrollments, listStudents,
+    createFollowUpTask, updateFollowUpTaskStatus, listFollowUpTasks,
     createOrder, appendPayment, triageConversation, dashboard,
   };
 }
