@@ -256,8 +256,14 @@ test('real HTTP enrollment rejection resubmission approval and task transitions 
         assert.deepEqual(denied.body, { error: { code: 'FORBIDDEN', message: '没有权限执行此操作' } });
       }
       const rejected = await apiPost('/api/enrollment-decisions', 'supervisor-1', { requestId: 'http-reject', enrollmentId: first.body.enrollment.id, decision: { status: 'rejected', reason: '信息不完整' } });
+      const tasksAfterRejection = await json(`${base}/api/follow-up-tasks`, { headers: { 'x-demo-user': 'consultant-1' } });
+      assert.equal(tasksAfterRejection.response.status, 200);
+      assert.deepEqual(tasksAfterRejection.body.tasks, []);
       const second = await apiPost('/api/enrollments', 'consultant-1', { requestId: 'http-submit-2', customerId, enrollment: enrollmentInput });
       const approved = await apiPost('/api/enrollment-decisions', 'supervisor-1', { requestId: 'http-approve', enrollmentId: second.body.enrollment.id, decision: { status: 'approved' } });
+      const tasksAfterApproval = await json(`${base}/api/follow-up-tasks`, { headers: { 'x-demo-user': 'consultant-1' } });
+      assert.equal(tasksAfterApproval.response.status, 200);
+      assert.deepEqual(tasksAfterApproval.body.tasks.map(task => task.id), [approved.body.task.id]);
       const started = await apiPost('/api/follow-up-task-status', 'consultant-1', { requestId: 'http-task-start', taskId: approved.body.task.id, status: 'in_progress' });
       const completed = await apiPost('/api/follow-up-task-status', 'consultant-1', { requestId: 'http-task-complete', taskId: approved.body.task.id, status: 'completed' });
       assert.deepEqual([first.response.status, rejected.response.status, second.response.status, approved.response.status, started.response.status, completed.response.status], [200, 200, 200, 200, 200, 200]);
