@@ -7,6 +7,7 @@ const { join } = require('node:path');
 const path = require('node:path');
 const { tmpdir } = require('node:os');
 const http = require('node:http');
+const { runInNewContext } = require('node:vm');
 const { createServer, isPathWithin } = require('../src/http/server');
 const { createStore } = require('../src/storage/sqlite-store');
 const { createCrmService } = require('../src/services/crm-service');
@@ -511,4 +512,260 @@ test('workbench exposes accessible enrollment student and task controls through 
   assert.match(css, /@media \(max-width:\s*940px\)[\s\S]*?\.workflow-grid\s*\{[^}]*grid-template-columns:\s*1fr/);
   assert.match(css, /min-height:\s*40px/);
   assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*?\.workflow-actions\s*\{[^}]*flex-direction:\s*column/);
+});
+
+// A small DOM boundary double, not a second implementation of the workbench.
+// Parse the real static HTML and execute the entire real app.js, including startup.
+// Fetch settlement stays under test control (even after abort) to test stale reads.
+function workbenchHarness({ user = 'consultant-1', transform = source => source } = {}) {
+  let document;
+  class Element {
+    constructor(tag) { this.tag = tag; this.children = []; this.attributes = {}; this.listeners = {}; this.disabled = false; this.hidden = false; this.className = ''; this.dataset = {}; }
+    set textContent(value) { this.children = []; this.content = String(value); }
+    get textContent() { return (this.content || '') + this.children.map(child => child.textContent).join(''); }
+    set value(value) { this.selectedValue = String(value); }
+    get value() { return this.selectedValue ?? (this.tag === 'select' ? this.querySelector('option')?.value || '' : ''); }
+    append(...children) { for (const child of children) { child.parent = this; this.children.push(child); } }
+    replaceChildren(...children) { this.children = []; this.content = ''; if (this.tag === 'select') this.selectedValue = undefined; this.append(...children); }
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
+      if (['id', 'name', 'type', 'value'].includes(name)) this[name] = String(value);
+      if (name === 'class') this.className = String(value);
+      if (['disabled', 'hidden'].includes(name)) this[name] = true;
+      if (name === 'data-target') this.dataset.target = String(value);
+    }
+    removeAttribute(name) { delete this.attributes[name]; }
+    get classList() { return { toggle: (name, enabled) => { const names = new Set(this.className.split(/\s+/).filter(Boolean)); if (enabled) names.add(name); else names.delete(name); this.className = [...names].join(' '); } }; }
+    matches(selector) {
+      const parts = selector.trim().split(/\s+/);
+      if (parts.length > 1) { const last = parts.pop(); if (!this.matches(last)) return false; for (let ancestor = this.parent; ancestor; ancestor = ancestor.parent) if (ancestor.matches(parts.join(' '))) return true; return false; }
+      const match = /^([\w-]+)?(?:#([\w-]+))?(?:\.([\w-]+))?(?:\[([\w-]+)(?:="([^"]*)")?\])?$/.exec(selector);
+      assert.ok(match, `Unsupported DOM selector: ${selector}`);
+      const [, tag, id, className, attribute, value] = match;
+      return (!tag || this.tag === tag) && (!id || this.id === id) && (!className || this.className.split(/\s+/).includes(className)) && (!attribute || Object.hasOwn(this.attributes, attribute) && (value === undefined || this.attributes[attribute] === value));
+    }
+    querySelectorAll(selector) { const result = []; for (const child of this.children) { if (selector.split(',').some(part => child.matches(part.trim()))) result.push(child); result.push(...child.querySelectorAll(selector)); } return result; }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+    addEventListener(type, listener) { (this.listeners[type] ||= []).push(listener); }
+    ignoredEventListener() {} // Used only by the explicit broken-binding sensitivity check.
+    fire(type) { if (this.disabled) return Promise.resolve(); const event = { preventDefault() { this.defaultPrevented = true; } }; return Promise.all((this.listeners[type] || []).map(listener => listener(event))); }
+    focus() { document.activeElement = this; }
+    scrollIntoView() { this.scrolled = true; }
+    setCustomValidity(value) { this.validationMessage = value; }
+    reportValidity() { return !this.validationMessage; }
+    reset() { for (const control of this.querySelectorAll('input, select')) control.selectedValue = undefined; }
+  }
+  document = new Element('document');
+  document.createElement = tag => new Element(tag);
+  const stack = [document];
+  for (const token of readFileSync(join(publicDir, 'index.html'), 'utf8').match(/<[^>]+>|[^<]+/g)) {
+    if (token.startsWith('<!')) continue;
+    if (token.startsWith('</')) { stack.pop(); continue; }
+    if (!token.startsWith('<')) { const node = new Element('text'); node.textContent = token; stack.at(-1).append(node); continue; }
+    const tag = /^<([\w-]+)/.exec(token)[1];
+    const node = new Element(tag);
+    for (const [, name, value] of token.slice(tag.length + 1, -1).matchAll(/([\w-]+)(?:="([^"]*)")?/g)) node.setAttribute(name, value ?? '');
+    stack.at(-1).append(node);
+    if (!['meta', 'link', 'input', 'br'].includes(tag)) stack.push(node);
+  }
+  document.querySelector('#demo-user').value = user;
+  const requests = [];
+  let uuid = 0;
+  runInNewContext(transform(readFileSync(join(publicDir, 'app.js'), 'utf8')), {
+    document,
+    crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(++uuid).padStart(12, '0')}` },
+    AbortController: class { constructor() { this.signal = { aborted: false }; } abort() { this.signal.aborted = true; } },
+    FormData: class { constructor(form) { this.values = new Map(form.querySelectorAll('input, select').filter(control => control.name && !control.disabled).map(control => [control.name, control.value])); } get(key) { return this.values.get(key) ?? null; } },
+    fetch: (path, options) => new Promise((resolveResponse, rejectResponse) => {
+      const pending = { path, options, settled: false,
+        reply: (body, status = 200) => { pending.settled = true; resolveResponse({ ok: status >= 200 && status < 300, json: async () => body }); },
+        reject: error => { pending.settled = true; rejectResponse(error); } };
+      requests.push(pending);
+    })
+  }, { filename: 'crm/public/app.js' });
+  return { document, requests, get: selector => document.querySelector(selector), reads: () => requests.filter(item => !item.settled && item.options.method !== 'POST'), posts: () => requests.filter(item => item.options.method === 'POST') };
+}
+
+const frontendCustomer = { id: 'customer-ui-1', name: '虚构界面客户', phone: '13800000004', ownerId: 'consultant-1', campusId: 'campus-a', teamId: 'team-a', assignedTeacherId: 'teacher-1', stage: '咨询中', nextFollowUpAt: '2030-01-10T09:00:00.000Z', notes: '' };
+const frontendEnrollment = { id: 'enrollment-ui-1', customerId: 'customer-ui-1', status: 'pending', currentEducation: '高中', targetLevel: '本科', school: '虚构大学', major: '数字媒体', classType: '周末班', submittedBy: 'consultant-1', submittedAt: '2026-09-07T00:00:00.000Z', decidedBy: '', decidedAt: '', rejectionReason: '', customer: frontendCustomer };
+const frontendTask = { id: 'task-ui-1', customerId: 'customer-ui-1', studentId: '', originType: 'manual', originId: '', ownerId: 'consultant-1', title: '虚构任务', dueAt: '2030-01-10T09:00:00.000Z', status: 'open', overdue: false };
+const drainWorkbench = () => new Promise(resolveDrain => setImmediate(resolveDrain));
+async function replyWorkbench(harness, overrides = {}, requests = harness.reads()) {
+  const fixtures = {
+    '/api/dashboard': { customerCount: 1, pendingHumanCount: 0, pendingEnrollmentCount: 0, studentCount: 0, openTaskCount: 0, overdueTaskCount: 0, metrics: { agreed: { amountCents: 12300 }, received: { amountCents: 2300 }, outstanding: { amountCents: 10000 } } },
+    '/api/customers': { customers: [frontendCustomer] }, '/api/enrollments': { enrollments: [] }, '/api/students': { students: [] }, '/api/follow-up-tasks': { tasks: [] }, ...overrides
+  };
+  assert.equal(requests.length, 5, 'startup/refresh must request all five resources');
+  assert.deepEqual(requests.map(item => item.path).sort(), ['/api/customers', '/api/dashboard', '/api/enrollments', '/api/follow-up-tasks', '/api/students']);
+  for (const item of requests) { assert.ok(Object.hasOwn(fixtures, item.path)); const body = fixtures[item.path]; item.reply(body, body.error ? 403 : 200); }
+  await drainWorkbench();
+}
+
+async function exerciseConsultantFrontend(options = {}) {
+  const ui = workbenchHarness(options);
+  assert.equal(ui.get('#enrollment-form button').disabled, true);
+  assert.match(ui.get('#status').textContent, /正在加载/);
+  assert.equal(ui.requests.length, 5, 'startup must issue five GET requests');
+  for (const request of ui.requests) {
+    assert.equal(request.options.headers['x-demo-user'], 'consultant-1');
+    assert.equal(request.options.headers.accept, 'application/json');
+    assert.equal(request.options.credentials, 'same-origin');
+    assert.equal(request.options.cache, 'no-store');
+  }
+  await replyWorkbench(ui, { '/api/students': { error: { code: 'FORBIDDEN', message: 'private server details' } } });
+  assert.equal(ui.get('#customer-count').textContent, '1');
+  assert.equal(ui.get('#student-list').textContent, '当前演示身份无权查看此模块。');
+  assert.equal(ui.get('#enrollment-form').hidden, false);
+  assert.equal(ui.get('#enrollment-form button').disabled, false);
+  assert.deepEqual(ui.get('#enrollment-customer').children.map(option => option.value), ['customer-ui-1']);
+  for (const [id, value] of [['current-education', ' 高中 '], ['target-level', ' 本科 '], ['school', ' 虚构大学 '], ['major', ' 数字媒体 '], ['class-type', ' 周末班 ']]) ui.get(`#${id}`).value = value;
+  const submitted = ui.get('#enrollment-form').fire('submit');
+  assert.equal(ui.posts().length, 1, 'bound consultant form must POST on submit');
+  assert.equal(ui.get('#enrollment-form button').disabled, true);
+  assert.equal(ui.get('#demo-user').disabled, true);
+  await ui.get('#enrollment-form button').fire('click');
+  assert.equal(ui.posts().length, 1, 'the disabled submit button cannot start another request');
+  const post = ui.posts()[0];
+  assert.equal(post.path, '/api/enrollments');
+  assert.equal(post.options.headers['x-demo-user'], 'consultant-1');
+  assert.equal(post.options.headers['content-type'], 'application/json');
+  assert.deepEqual(JSON.parse(post.options.body), { requestId: '00000000-0000-4000-8000-000000000001', customerId: 'customer-ui-1', enrollment: { currentEducation: '高中', targetLevel: '本科', school: '虚构大学', major: '数字媒体', classType: '周末班' } });
+  post.reply({ enrollment: frontendEnrollment });
+  await drainWorkbench();
+  await replyWorkbench(ui, { '/api/enrollments': { enrollments: [frontendEnrollment] }, '/api/students': { error: { code: 'FORBIDDEN' } } });
+  await submitted;
+  assert.match(ui.get('#status').textContent, /报名已提交/);
+  assert.match(ui.get('#enrollment-list').textContent, /待审核/);
+  assert.equal(ui.get('#enrollment-list time').dateTime, '2026-09-07T00:00:00.000Z');
+  assert.equal(ui.get('#enrollment-form button').disabled, true, 'pending enrollment must no longer be submittable');
+  assert.equal(ui.get('#demo-user').disabled, false);
+  assert.equal(ui.document.activeElement, ui.get('#status'));
+}
+
+test('executable workbench startup and consultant form submit use real bound handlers', () => exerciseConsultantFrontend());
+
+test('executable workbench supervisor rejects with a reason and administrator approves', async () => {
+  for (const [user, buttonText, decision] of [['supervisor-1', '驳回报名', { status: 'rejected', reason: '补充资料' }], ['admin-1', '通过报名', { status: 'approved' }]]) {
+    const ui = workbenchHarness({ user });
+    await replyWorkbench(ui, { '/api/enrollments': { enrollments: [frontendEnrollment] } });
+    assert.equal(ui.get('#enrollment-form').hidden, true);
+    const button = ui.get('#enrollment-list').querySelectorAll('button').find(item => item.textContent === buttonText);
+    assert.ok(button);
+    if (decision.status === 'rejected') {
+      await button.fire('click');
+      assert.equal(ui.posts().length, 0, 'blank rejection reason must not reach the server');
+      assert.equal(ui.document.activeElement, ui.get('#enrollment-list input'));
+      ui.get('#enrollment-list input').value = ' 补充资料 ';
+      await ui.get('#enrollment-list input').fire('input');
+    }
+    const decided = button.fire('click');
+    assert.equal(ui.posts().length, 1, 'bound decision button must send a POST');
+    const post = ui.posts()[0];
+    assert.equal(post.path, '/api/enrollment-decisions');
+    assert.equal(post.options.headers['x-demo-user'], user);
+    assert.deepEqual(JSON.parse(post.options.body), { requestId: '00000000-0000-4000-8000-000000000001', enrollmentId: 'enrollment-ui-1', decision });
+    assert.equal(button.disabled, true);
+    post.reply({ enrollment: { ...frontendEnrollment, status: decision.status } });
+    await drainWorkbench();
+    const students = decision.status === 'approved' ? [{ id: 'student-ui-1', customerId: 'customer-ui-1', enrollmentId: 'enrollment-ui-1', status: 'active', createdAt: '2026-09-08T00:00:00.000Z', customer: frontendCustomer }] : [];
+    await replyWorkbench(ui, { '/api/enrollments': { enrollments: [{ ...frontendEnrollment, status: decision.status, decidedAt: '2026-09-08T00:00:00.000Z', rejectionReason: decision.reason || '' }] }, '/api/students': { students } });
+    await decided;
+    assert.equal(ui.get('#enrollment-list').querySelectorAll('button').length, 0);
+    assert.match(ui.get('#status').textContent, decision.status === 'approved' ? /报名已通过/ : /报名已驳回/);
+    assert.match(ui.get('#student-list').textContent, decision.status === 'approved' ? /student-ui-1/ : /暂无记录/);
+  }
+});
+
+test('executable workbench manual task form and forward task actions refresh their state', async () => {
+  const ui = workbenchHarness();
+  await replyWorkbench(ui);
+  ui.get('#task-title').value = ' 联系客户 ';
+  ui.get('#task-due').value = '2030-01-10T09:00';
+  const created = ui.get('#task-form').fire('submit');
+  assert.equal(ui.posts().length, 1, 'bound task form must send a POST');
+  const first = ui.posts()[0];
+  assert.equal(first.path, '/api/follow-up-tasks');
+  assert.deepEqual(JSON.parse(first.options.body), { requestId: '00000000-0000-4000-8000-000000000001', customerId: 'customer-ui-1', task: { title: '联系客户', dueAt: new Date('2030-01-10T09:00').toISOString() } });
+  first.reply({ task: frontendTask });
+  await drainWorkbench();
+  await replyWorkbench(ui, { '/api/follow-up-tasks': { tasks: [frontendTask] } });
+  await created;
+  assert.match(ui.get('#status').textContent, /跟进任务已创建/);
+  assert.deepEqual(ui.get('#task-list').querySelectorAll('button').map(button => button.textContent), ['开始跟进', '完成任务', '取消任务']);
+  const started = ui.get('#task-list button').fire('click');
+  assert.equal(ui.posts().length, 2, 'bound task transition button must send a POST');
+  const second = ui.posts()[1];
+  assert.equal(second.path, '/api/follow-up-task-status');
+  assert.deepEqual(JSON.parse(second.options.body), { requestId: '00000000-0000-4000-8000-000000000002', taskId: 'task-ui-1', status: 'in_progress' });
+  second.reply({ task: { ...frontendTask, status: 'in_progress' } });
+  await drainWorkbench();
+  await replyWorkbench(ui, { '/api/follow-up-tasks': { tasks: [{ ...frontendTask, status: 'in_progress' }] } });
+  await started;
+  assert.deepEqual(ui.get('#task-list').querySelectorAll('button').map(button => button.textContent), ['完成任务', '取消任务']);
+  const completed = ui.get('#task-list button').fire('click');
+  assert.equal(JSON.parse(ui.posts()[2].options.body).status, 'completed');
+  ui.posts()[2].reply({ task: { ...frontendTask, status: 'completed' } });
+  await drainWorkbench();
+  await replyWorkbench(ui, { '/api/follow-up-tasks': { tasks: [{ ...frontendTask, status: 'completed' }] } });
+  await completed;
+  assert.equal(ui.get('#task-list').querySelectorAll('button').length, 0);
+  assert.match(ui.get('#task-list').textContent, /已完成/);
+});
+
+test('executable workbench identity changes isolate forbidden modules and ignore superseded reads', async () => {
+  const ui = workbenchHarness({ user: 'admin-1' });
+  const stale = ui.reads();
+  ui.get('#demo-user').value = 'finance-1';
+  const changed = ui.get('#demo-user').fire('change');
+  assert.equal(ui.requests.length, 10, 'bound identity change must load the new actor');
+  assert.equal(stale[0].options.signal.aborted, true);
+  const current = ui.reads().slice(5);
+  assert.ok(current.every(request => request.options.headers['x-demo-user'] === 'finance-1'));
+  const forbidden = { error: { code: 'FORBIDDEN', message: 'server-secret' } };
+  await replyWorkbench(ui, { '/api/enrollments': forbidden, '/api/students': forbidden, '/api/follow-up-tasks': forbidden }, current);
+  await changed;
+  const rendered = ui.document.textContent;
+  assert.equal(ui.get('#task-form').hidden, true);
+  assert.equal(ui.get('#enrollment-form').hidden, true);
+  assert.equal(ui.get('#task-list').textContent, '当前演示身份无权查看此模块。');
+  assert.equal(ui.get('#status').textContent, '数据已刷新。');
+  await replyWorkbench(ui, { '/api/customers': { customers: [{ ...frontendCustomer, name: '过期管理员数据' }] } }, stale);
+  assert.equal(ui.document.textContent, rendered, 'late old-actor responses must not overwrite current data or status');
+  const nav = ui.get('button[data-target="enrollment-section"]');
+  await nav.fire('click');
+  assert.equal(ui.document.activeElement, ui.get('#enrollment-section'));
+  assert.equal(nav.attributes['aria-current'], 'page');
+});
+
+test('executable workbench preserves saved result when post succeeds but refresh fails', async () => {
+  const ui = workbenchHarness({ user: 'admin-1' });
+  await replyWorkbench(ui, { '/api/enrollments': { enrollments: [frontendEnrollment] } });
+  const saved = ui.get('#enrollment-list button').fire('click');
+  assert.equal(ui.posts().length, 1, 'approval must submit before its refresh can fail');
+  ui.posts()[0].reply({ enrollment: { ...frontendEnrollment, status: 'approved' } });
+  await drainWorkbench();
+  const refresh = ui.reads();
+  assert.equal(refresh.length, 5);
+  refresh[0].reject(new Error('C:/private/token-secret.sqlite'));
+  for (const request of refresh.slice(1)) request.reply({});
+  await saved;
+  assert.match(ui.get('#status').textContent, /报名已通过.*但列表刷新失败/);
+  assert.doesNotMatch(ui.get('#status').textContent, /private|token-secret|sqlite/);
+  assert.equal(ui.get('#task-form button').disabled, true);
+  assert.equal(ui.get('#retry').disabled, false);
+  const retried = ui.get('#retry').fire('click');
+  await replyWorkbench(ui);
+  await retried;
+  assert.equal(ui.get('#status').textContent, '数据已刷新。');
+  assert.equal(ui.get('#task-form button').disabled, false);
+  assert.equal(ui.posts().length, 1, 'retrying a failed refresh must not repeat the write');
+});
+
+test('executable workbench tests detect removed event bindings and removed startup', async () => {
+  await assert.rejects(exerciseConsultantFrontend({ transform: source => source.replaceAll('.addEventListener(', '.ignoredEventListener(') }), /bound consultant form must POST on submit/);
+  await assert.rejects(exerciseConsultantFrontend({ transform: source => {
+    const changed = source.replace('; load();', ';');
+    assert.notEqual(changed, source, 'startup mutation must modify the executed source');
+    return changed;
+  } }), /startup must issue five GET requests/);
 });
