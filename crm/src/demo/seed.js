@@ -47,7 +47,21 @@ function seedDemoData({ service }) {
     conversation: { message: '虚构风险演示：我想咨询退款流程，需要人工确认。', confidence: 0.99, citations: [] }
   }).conversation;
 
-  return { customerIds: customers.map(customer => customer.id), orderIds: orders.map(order => order.id), conversationIds: [humanRequired.id] };
+  const consultant = DEMO_ACTORS['consultant-1'];
+  const enrollmentCustomer = service.importCustomer({
+    actor: consultant,
+    requestId: 'chengqiyun-demo:enrollment:v1:customer:1',
+    customer: { name: '虚构报名客户', phone: '13800000004', ownerId: 'consultant-1', campusId: 'campus-a', teamId: 'team-a', assignedTeacherId: 'teacher-1', stage: '待报名审核', notes: '仅用于本地虚构演示。' },
+    source: { channel: 'local-fictional-demo', batch: 'enrollment-seed-v1' },
+  }).customer;
+  const enrollment = service.submitEnrollment({
+    actor: consultant,
+    requestId: 'chengqiyun-demo:enrollment:v1:submit:1',
+    customerId: enrollmentCustomer.id,
+    enrollment: { currentEducation: '高中', targetLevel: '本科', school: '虚构大学', major: '数字媒体', classType: '周末班' },
+  }).enrollment;
+
+  return { customerIds: [...customers.map(customer => customer.id), enrollmentCustomer.id], orderIds: orders.map(order => order.id), conversationIds: [humanRequired.id], enrollmentIds: [enrollment.id] };
 }
 
 module.exports = { seedDemoData };

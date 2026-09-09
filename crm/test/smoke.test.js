@@ -231,7 +231,11 @@ test('entrypoint becomes healthy only after fictional seed and reopens without d
   await waitForHealth(first, firstPort);
   assert.match(first.output(), new RegExp(`CRM_READY http://127\\.0\\.0\\.1:${firstPort}`));
   const firstDashboard = await dashboard(firstPort);
-  assert.equal(firstDashboard.customerCount, 3);
+  assert.equal(firstDashboard.customerCount, 4);
+  assert.equal(firstDashboard.pendingEnrollmentCount, 1);
+  assert.equal(firstDashboard.studentCount, 0);
+  assert.equal(firstDashboard.openTaskCount, 0);
+  assert.equal(firstDashboard.overdueTaskCount, 0);
   assert.ok(firstDashboard.pendingHumanCount >= 1);
   assert.ok(firstDashboard.metrics.agreed.amountCents > 0);
   assert.ok(firstDashboard.metrics.received.amountCents > 0);
@@ -241,8 +245,15 @@ test('entrypoint becomes healthy only after fictional seed and reopens without d
   assert.equal(firstDashboard.metrics.outstanding.amountCents, 2_440_000);
   assert.equal(firstDashboard.pendingHumanCount, 1);
   assert.deepEqual((await customers(firstPort)).map(customer => [customer.name, customer.phone]).sort(), [
-    ['演示学员一', '13800000001'], ['演示学员三', '13800000003'], ['演示学员二', '13800000002']
+    ['演示学员一', '13800000001'], ['演示学员三', '13800000003'], ['演示学员二', '13800000002'], ['虚构报名客户', '13800000004']
   ]);
+  const firstCustomers = await customers(firstPort);
+  const enrollmentCustomer = firstCustomers.find(customer => customer.name === '虚构报名客户');
+  assert.equal(enrollmentCustomer.ownerId, 'consultant-1');
+  const firstEnrollments = JSON.parse((await request(`http://127.0.0.1:${firstPort}/api/enrollments`, { 'x-demo-user': 'admin-1' })).body).enrollments;
+  assert.equal(firstEnrollments.length, 1);
+  assert.deepEqual([firstEnrollments[0].customerId, firstEnrollments[0].status, firstEnrollments[0].submittedBy, firstEnrollments[0].school, firstEnrollments[0].major],
+    [enrollmentCustomer.id, 'pending', 'consultant-1', '虚构大学', '数字媒体']);
   assert.equal((await request(`http://127.0.0.1:${firstPort}/`)).status, 200);
   const firstExit = await stopProcess(first);
   if (process.platform === 'win32') assert.deepEqual(firstExit, { code: 0, signal: null });
@@ -254,6 +265,8 @@ test('entrypoint becomes healthy only after fictional seed and reopens without d
   await waitForHealth(second, secondPort);
   const secondDashboard = await dashboard(secondPort);
   assert.deepEqual(secondDashboard, firstDashboard);
+  assert.deepEqual(await customers(secondPort), firstCustomers);
+  assert.deepEqual(JSON.parse((await request(`http://127.0.0.1:${secondPort}/api/enrollments`, { 'x-demo-user': 'admin-1' })).body).enrollments, firstEnrollments);
   const secondExit = await stopProcess(second);
   if (process.platform === 'win32') assert.deepEqual(secondExit, { code: 0, signal: null });
   else assert.deepEqual(secondExit, { code: 0, signal: null });

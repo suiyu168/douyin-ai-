@@ -472,11 +472,11 @@ test('workbench navigation links implemented sections and exposes disabled const
   const html = readFileSync(join(publicDir, 'index.html'), 'utf8');
   const app = readFileSync(join(publicDir, 'app.js'), 'utf8');
   const css = readFileSync(join(publicDir, 'styles.css'), 'utf8');
-  for (const target of ['workspace-overview', 'customers-section', 'conversations-section', 'finance-overview']) {
+  for (const target of ['workspace-overview', 'customers-section', 'conversations-section', 'finance-overview', 'enrollment-section']) {
     assert.match(html, new RegExp(`data-target="${target}"`));
     assert.match(html, new RegExp(`id="${target}"`));
   }
-  for (const label of ['报名学员', '组织权限', '知识库']) {
+  for (const label of ['组织权限', '知识库']) {
     assert.match(html, new RegExp(`<button[^>]+disabled[^>]*>[^<]*${label}[\\s\\S]*?模块建设中[\\s\\S]*?<\\/button>`));
   }
   assert.match(app, /querySelectorAll\('\.nav-item\[data-target\]'\)/);
@@ -486,4 +486,29 @@ test('workbench navigation links implemented sections and exposes disabled const
   assert.match(css, /@media \(max-width:940px\)[\s\S]*?\.sidebar \{[^}]*width:100vw;[^}]*max-width:100%;[^}]*min-width:0;/);
   assert.match(css, /@media \(max-width:940px\)[\s\S]*?main \{[^}]*min-width:0;/);
   assert.doesNotMatch(html, /暂无可见客户，请在客户模块导入/);
+});
+
+test('workbench exposes accessible enrollment student and task controls through fixed same-origin APIs', () => {
+  const html = readFileSync(join(publicDir, 'index.html'), 'utf8');
+  const app = readFileSync(join(publicDir, 'app.js'), 'utf8');
+  const css = readFileSync(join(publicDir, 'styles.css'), 'utf8');
+  const navigation = html.match(/<button[^>]*data-target="enrollment-section"[^>]*>/)?.[0];
+  assert.ok(navigation, 'enrollment navigation exists');
+  assert.doesNotMatch(navigation, /disabled/);
+  for (const id of ['enrollment-form', 'enrollment-list', 'student-list', 'task-form', 'task-list']) assert.match(html, new RegExp(`id="${id}"`));
+  for (const id of ['consultant-1', 'supervisor-1']) assert.match(html, new RegExp(`<option value="${id}">`));
+  for (const path of ['/api/enrollments', '/api/enrollment-decisions', '/api/follow-up-tasks', '/api/follow-up-task-status']) assert.ok(app.includes(`post('${path}',`), path);
+  assert.match(app, /request\('\/api\/students'\)/);
+  assert.match(app, /function request\(path, options = \{\}\)/);
+  assert.match(app, /crypto\.randomUUID\(\)/);
+  assert.match(app, /createElement\('time'\)/);
+  assert.match(app, /\.dateTime\s*=/);
+  assert.match(app, /replaceChildren\(/);
+  assert.match(app, /\.textContent\s*=/);
+  assert.match(app, /button\.disabled = true/);
+  assert.doesNotMatch(app, /innerHTML|insertAdjacentHTML/);
+  assert.match(css, /\.workflow-card\s*\{/);
+  assert.match(css, /@media \(max-width:\s*940px\)[\s\S]*?\.workflow-grid\s*\{[^}]*grid-template-columns:\s*1fr/);
+  assert.match(css, /min-height:\s*40px/);
+  assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*?\.workflow-actions\s*\{[^}]*flex-direction:\s*column/);
 });
