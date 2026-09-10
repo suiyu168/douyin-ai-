@@ -6,7 +6,7 @@
 
 - 仓库：`https://github.com/suiyu168/douyin-ai-.git`
 - 分支：`codex/chengqiyun-core-slice`
-- 已推送提交：`10f0c41cf95d126d863cc778c3220f55582eed59`
+- 已推送提交：`dbcb6331467277b43cdf32a2bd12f92f4acf788f`
 - 工作目录：`C:\Users\Administrator\Desktop\douyinauto-master\.worktrees\chengqiyun-core-slice`
 
 ## 已完成并验证
@@ -23,6 +23,7 @@
 - 上一里程碑已经完成并推送，本地开发分支与远端一致。
 - 没有正在编写但尚未提交的功能。
 - 下一候选里程碑是“可管理的知识库与客服答疑工作台”；开始编码前需先确认短设计边界。
+- 已启用省算力工作约定；每三天在当前 Codex 线程生成一次轻量算力复盘。
 
 ## 恢复工作只需
 
