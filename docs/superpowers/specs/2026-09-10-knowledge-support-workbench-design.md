@@ -70,6 +70,7 @@
 - `reviewKnowledgeVersion`
 - `publishKnowledgeVersion`
 - `expireKnowledgeVersion`
+- `deleteKnowledgeDraft`
 - `listKnowledgeEntries`
 - `searchPublishedKnowledge`
 - `listConversations`
