@@ -33,13 +33,24 @@ function followUpTaskDate(value) {
     throw error;
   }
 }
+function stringArray(value, code) {
+  if (!Array.isArray(value)) fail(code);
+  const length = Object.getOwnPropertyDescriptor(value, 'length');
+  if (!length || !Object.hasOwn(length, 'value') || !Number.isSafeInteger(length.value) || length.value > 1000) fail(code);
+  const result = [];
+  for (let index = 0; index < length.value; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) fail(code);
+    result.push(string(descriptor.value, code, { required: true }));
+  }
+  return result;
+}
 function actorSnapshot(value) {
   record(value, 'FORBIDDEN');
   const actor = { id: string(value.id, 'FORBIDDEN', { required: true }), roles: [], campusIds: [], teamIds: [] };
   for (const field of ['roles', 'campusIds', 'teamIds']) {
     const items = value[field] === undefined && field === 'teamIds' ? [] : value[field];
-    if (!Array.isArray(items) || items.length > 1000) fail('FORBIDDEN');
-    actor[field] = items.map(item => string(item, 'FORBIDDEN', { required: true }));
+    actor[field] = stringArray(items, 'FORBIDDEN');
   }
   if (!actor.roles.some(role => ROLES.includes(role))) fail('FORBIDDEN');
   return actor;

@@ -1146,3 +1146,71 @@ test('dashboard exposes only traceable visible workflow counts and preserves exi
   assert.equal(global.metrics.agreed.amountCents, 950_000);
   assert.deepEqual(global.metrics.agreed.orderIds, [order.id]);
 });
+
+test('service actor normalization blocks caller map promotion on cross-campus student reads without invoking hooks', (t) => {
+  const { service } = fixture(t);
+  const customerId = imported(service, 'hostile-actor-list-customer', {
+    phone: '13900000031', wechat: 'hostile_actor_list', campusId: 'campus-b', teamId: 'team-b',
+    ownerId: 'consultant-b', assignedTeacherId: 'teacher-b',
+  }).customer.id;
+  const enrollmentId = submittedEnrollment(service, customerId, 'hostile-actor-list-submit').enrollment.id;
+  service.decideEnrollment({ actor: admin, requestId: 'hostile-actor-list-approve', enrollmentId, decision: { status: 'approved' } });
+
+  const calls = { map: 0, iterator: 0, species: 0 };
+  const roles = ['finance'];
+  Object.defineProperty(roles, 'map', { value() { calls.map += 1; return ['admin']; } });
+  Object.defineProperty(roles, Symbol.iterator, { value() { calls.iterator += 1; throw new Error('caller iterator invoked'); } });
+  const campusIds = ['campus-a'];
+  const constructor = {};
+  Object.defineProperty(constructor, Symbol.species, { get() { calls.species += 1; return Array; } });
+  Object.defineProperty(campusIds, 'constructor', { value: constructor });
+  const hostile = { id: 'finance-1', roles, campusIds, teamIds: [] };
+
+  assert.throws(() => service.listStudents({ actor: hostile, scope: { campusId: 'campus-b' } }), { code: 'FORBIDDEN' });
+  assert.deepEqual(calls, { map: 0, iterator: 0, species: 0 });
+});
+
+test('service actor normalization blocks caller map promotion on enrollment writes', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'hostile-actor-write-customer', { ownerId: 'consultant-1' }).customer.id;
+  const enrollmentId = submittedEnrollment(service, customerId, 'hostile-actor-write-submit').enrollment.id;
+  let mapCalls = 0;
+  const roles = ['finance'];
+  Object.defineProperty(roles, 'map', { value() { mapCalls += 1; return ['admin']; } });
+  const hostile = { id: 'finance-1', roles, campusIds: ['campus-a'], teamIds: [] };
+  const before = workflowCounts(store);
+
+  assert.throws(() => service.decideEnrollment({ actor: hostile, requestId: 'hostile-actor-write-approve', enrollmentId, decision: { status: 'approved' } }), { code: 'FORBIDDEN' });
+  assert.equal(mapCalls, 0);
+  assert.equal(store.db.prepare('SELECT status FROM enrollment_applications WHERE id = ?').get(enrollmentId).status, 'pending');
+  assert.deepEqual(workflowCounts(store), before);
+});
+
+test('service actor normalization prevents downgraded map promotion from replaying an admin result', (t) => {
+  const { store, service } = fixture(t);
+  const customerId = imported(service, 'hostile-actor-replay-customer').customer.id;
+  const original = submittedEnrollment(service, customerId, 'hostile-actor-replay-submit');
+  let mapCalls = 0;
+  const roles = ['finance'];
+  Object.defineProperty(roles, 'map', { value() { mapCalls += 1; return ['admin']; } });
+  const downgraded = { id: admin.id, roles, campusIds: [], teamIds: [] };
+  const before = workflowCounts(store);
+
+  assert.throws(() => service.submitEnrollment({ actor: downgraded, requestId: 'hostile-actor-replay-submit', customerId, enrollment: enrollmentInput({ school: '已篡改' }) }), { code: 'FORBIDDEN' });
+  assert.equal(mapCalls, 0);
+  assert.deepEqual(workflowCounts(store), before);
+  assert.equal(service.submitEnrollment({ actor: admin, requestId: 'hostile-actor-replay-submit', customerId, enrollment: enrollmentInput({ school: '正常重放' }) }).enrollment.id, original.enrollment.id);
+});
+
+test('service actor normalization rejects accessor sparse and non-string array entries without reading accessors', (t) => {
+  const { service } = fixture(t);
+  const base = { id: 'admin-1', campusIds: [], teamIds: [] };
+  assert.throws(() => service.listCustomers({ actor: { ...base, roles: Array(1) } }), { code: 'FORBIDDEN' });
+  assert.throws(() => service.listCustomers({ actor: { ...base, roles: [{}] } }), { code: 'FORBIDDEN' });
+
+  let accessorReads = 0;
+  const accessorRoles = [];
+  Object.defineProperty(accessorRoles, '0', { enumerable: true, get() { accessorReads += 1; return 'admin'; } });
+  assert.throws(() => service.listCustomers({ actor: { ...base, roles: accessorRoles } }), { code: 'FORBIDDEN' });
+  assert.equal(accessorReads, 0);
+});
