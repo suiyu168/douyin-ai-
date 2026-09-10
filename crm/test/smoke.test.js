@@ -370,7 +370,7 @@ test('root CRM commands retain legacy commands and the published boundaries', ()
   assert.equal(packageJson.scripts['crm:test'], 'node --test crm/test/*.test.js');
   const rootReadme = readFileSync(join(root, 'README.md'), 'utf8');
   const crmReadme = readFileSync(join(root, 'crm', 'README.md'), 'utf8');
-  assert.match(rootReadme, /成蹊云 CRM/);
+  assert.match(rootReadme, /知程云 CRM/);
   assert.match(rootReadme, /legacy/i);
   assert.match(crmReadme, /虚构数据/);
   assert.match(crmReadme, /不得.*真实/);

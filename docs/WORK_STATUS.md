@@ -1,4 +1,4 @@
-# 成蹊云 CRM 当前工作状态
+# 知程云 CRM 当前工作状态
 
 更新时间：2026-09-10
 
@@ -6,7 +6,7 @@
 
 - 仓库：`https://github.com/suiyu168/douyin-ai-.git`
 - 分支：`codex/chengqiyun-core-slice`
-- 已推送提交：`dbcb6331467277b43cdf32a2bd12f92f4acf788f`
+- 远端进度：以 `origin/codex/chengqiyun-core-slice` 的最新提交为准，恢复时用 Git 核对。
 - 工作目录：`C:\Users\Administrator\Desktop\douyinauto-master\.worktrees\chengqiyun-core-slice`
 
 ## 已完成并验证
@@ -21,8 +21,8 @@
 ## 当前状态
 
 - 上一里程碑已经完成并推送，本地开发分支与远端一致。
-- 没有正在编写但尚未提交的功能。
-- 下一候选里程碑是“可管理的知识库与客服答疑工作台”；开始编码前需先确认短设计边界。
+- 产品正式名称已由“成蹊云”改为“知程云”；旧分支、工作树、数据库路径和幂等请求前缀作为兼容标识保留。
+- “可管理的知识库与客服答疑工作台”设计已确认，下一步编写实施计划并按测试先行开发。
 - 已启用省算力工作约定；每三天在当前 Codex 线程生成一次轻量算力复盘。
 
 ## 恢复工作只需

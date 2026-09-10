@@ -452,7 +452,7 @@ test('workbench source declares honest, accessible same-origin states without bu
   const html = readFileSync(join(publicDir, 'index.html'), 'utf8');
   const app = readFileSync(join(publicDir, 'app.js'), 'utf8');
   const css = readFileSync(join(publicDir, 'styles.css'), 'utf8');
-  for (const label of ['工作台', '客户', 'AI 会话', '报名学员', '订单收款', '报表', '组织权限', '知识库', '成蹊云', '客户总数', '待人工', '成交额', '实收', '待收', 'AI 已回复', '待人工确认', '人工接管', '模块建设中']) assert.match(html, new RegExp(label));
+  for (const label of ['工作台', '客户', 'AI 会话', '报名学员', '订单收款', '报表', '组织权限', '知识库', '知程云', '客户总数', '待人工', '成交额', '实收', '待收', 'AI 已回复', '待人工确认', '人工接管', '模块建设中']) assert.match(html, new RegExp(label));
   assert.match(html, /aria-live/);
   assert.match(app, /['"]\/api\/dashboard['"]/);
   assert.match(app, /['"]\/api\/customers['"]/);

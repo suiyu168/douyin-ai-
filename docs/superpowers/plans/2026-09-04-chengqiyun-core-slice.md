@@ -1,8 +1,8 @@
-# 成蹊云 CRM 核心业务切片 Implementation Plan
+# 知程云 CRM 核心业务切片 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在不破坏旧 Electron 软件的前提下，交付一个可独立启动的成蹊云 CRM 核心切片，贯通客户去重、权限、订单资金台账、知识版本与 AI 转人工、仪表盘及深色客服工作台。
+**Goal:** 在不破坏旧 Electron 软件的前提下，交付一个可独立启动的知程云 CRM 核心切片，贯通客户去重、权限、订单资金台账、知识版本与 AI 转人工、仪表盘及深色客服工作台。
 
 **Architecture:** 新代码全部位于 `crm/`，使用 Node.js 内置模块实现模块化业务核心、SQLite 持久化和 HTTP API，浏览器工作台通过同源 API 访问。领域规则不依赖 UI 或数据库，便于后续把本地 SQLite 适配器替换为 PostgreSQL，并把 FastGPT/微信接入放入独立适配器。
 
@@ -332,7 +332,7 @@
 
 - [ ] **Step 5: 更新说明与根脚本**
 
-  根 README 首段明确“成蹊云 CRM 正在 `crm/` 开发，旧抖音工具为 legacy 基线”；`crm/README.md` 写出启动、演示账号、数据位置、测试、当前完成范围和不得使用真实数据的警告。
+  根 README 首段明确“知程云 CRM 正在 `crm/` 开发，旧抖音工具为 legacy 基线”；`crm/README.md` 写出启动、演示账号、数据位置、测试、当前完成范围和不得使用真实数据的警告。
 
 - [ ] **Step 6: 运行冒烟、CRM 全套与旧系统回归**
 
